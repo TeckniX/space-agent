@@ -95,4 +95,11 @@ fi
 # No CMD args: default production path — bootstrap then supervise (HOST/PORT from env / .env).
 run_bootstrap
 # Supervise stays in the foreground; signals go to the Node process under tini.
-exec node space supervise
+
+if [[ "${NODE_ENV}" == "development" ]]; then
+  CMD="node space server"
+else
+  CMD="NODE space supervise --auto-update-interval 0"
+fi
+
+exec ${CMD} HOST=${HOST} PORT=${PORT} CUSTOMWARE_PATH=${CUSTOMWARE_PATH} WORKERS=${WORKERS}
