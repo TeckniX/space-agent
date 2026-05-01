@@ -1,0 +1,13 @@
+[build]
+builder = "docker"
+
+[deploy]
+startCommand = ["/docker-entrypoint.sh"]
+healthcheckPath = "/"
+healthcheckTimeout = 100
+restartPolicyType = "on-failure"
+[[mounts]]
+source = "space-agent-customware"
+destination = "/data/customware"
+
+[volume "space-agent-customware"]
