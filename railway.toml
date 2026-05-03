@@ -2,7 +2,7 @@
 builder = "docker"
 
 [deploy]
-startCommand = ["/docker-entrypoint.sh"]
+startCommand = "/docker-entrypoint.sh"
 healthcheckPath = "/"
 healthcheckTimeout = 100
 restartPolicyType = "on-failure"
