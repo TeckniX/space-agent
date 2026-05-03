@@ -26,3 +26,15 @@ docker-run:
 # Interactive shell in the image (skips entrypoint bootstrap; no server started).
 docker-shell:
     docker run --rm -it -e SPACE_DOCKER_SKIP_INIT=1 -v {{VOLUME}}:/srv/space/customware {{FULL_IMAGE}} bash
+
+compose-up:
+    docker compose up -d
+
+compose-down:
+    docker compose down
+
+compose-logs:
+    docker compose logs -f
+
+compose-exec:
+    docker compose exec {{SERVICE}} {{COMMAND}}
