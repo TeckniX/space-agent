@@ -36,7 +36,7 @@ export async function post(context) {
         options.entries = payload.entries;
       }
 
-      return hasBatchMove(payload) ? moveAppPaths(options) : moveAppPath(options);
+      return hasBatchMove(payload) ? await moveAppPaths(options) : await moveAppPath(options);
     });
   } catch (error) {
     throw createHttpError(error.message || "File move failed.", Number(error.statusCode) || 500);

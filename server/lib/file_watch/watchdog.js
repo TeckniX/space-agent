@@ -30,6 +30,7 @@ import {
   isPathIndexEntryEqual,
   shouldReplicateFileIndexShard
 } from "./file_index_store.js";
+import { isObjectStorageConfigured, listObjectMetadata } from "../storage/object_storage.js";
 
 const REFRESH_DEBOUNCE_MS = 75;
 const FULL_SCAN_YIELD_INTERVAL_MS = 8;
@@ -1001,6 +1002,81 @@ export function createWatchdog(options = {}) {
     }
 
     shardMap[shardId][record.projectPath] = record.entry;
+  }
+
+  async function mergeObjectStorageCustomwarePrefixIntoShards(shardMap, keyPrefix) {
+    if (!isObjectStorageConfigured(runtimeParams) || !keyPrefix) {
+      return;
+    }
+
+    const objects = await listObjectMetadata(runtimeParams, keyPrefix);
+    const dirPaths = new Set();
+
+    for (const { key, lastModified, sizeBytes } of objects) {
+      if (!key) {
+        continue;
+      }
+
+      if (key.endsWith("/")) {
+        const projectPath = `/app/${key.replace(/\/+$/u, "")}/`;
+
+        if (!isIgnoredProjectPath(projectPath) && matchesCompiledPatterns(compiledPatterns, projectPath)) {
+          addPathIndexRecordToShardMap(shardMap, {
+            entry: {
+              isDirectory: true,
+              mtimeMs: lastModified || 0,
+              sizeBytes: 0
+            },
+            projectPath
+          });
+        }
+
+        continue;
+      }
+
+      const projectPath = `/app/${key}`;
+
+      if (isIgnoredProjectPath(projectPath) || !matchesCompiledPatterns(compiledPatterns, projectPath)) {
+        continue;
+      }
+
+      addPathIndexRecordToShardMap(shardMap, {
+        entry: {
+          isDirectory: false,
+          mtimeMs: lastModified || Date.now(),
+          sizeBytes: sizeBytes || 0
+        },
+        projectPath
+      });
+
+      let partial = key;
+
+      for (;;) {
+        const slash = partial.lastIndexOf("/");
+
+        if (slash <= 0) {
+          break;
+        }
+
+        partial = partial.slice(0, slash);
+        dirPaths.add(`/app/${partial}/`);
+      }
+    }
+
+    for (const dirPath of dirPaths) {
+      if (isIgnoredProjectPath(dirPath) || !matchesCompiledPatterns(compiledPatterns, dirPath)) {
+        continue;
+      }
+
+      addPathIndexRecordToShardMap(shardMap, {
+        entry: {
+          isDirectory: true,
+          mtimeMs: 0,
+          sizeBytes: 0
+        },
+        projectPath: dirPath
+      });
+    }
   }
 
   async function rebuildCurrentPathIndexAsync(scanRoots = []) {
@@ -2002,6 +2078,9 @@ export function createWatchdog(options = {}) {
     mergeShardMaps(nextShards, coreScan.shards);
     mergeShardMaps(nextShards, layerRootScan.shards);
 
+    await mergeObjectStorageCustomwarePrefixIntoShards(nextShards, "L1/");
+    await mergeObjectStorageCustomwarePrefixIntoShards(nextShards, "L2/");
+
     for (const shardId of listFileIndexShardIds()) {
       if (!isL2FileIndexShardId(shardId) || !fileIndexStore.isShardCurrent(shardId)) {
         continue;
@@ -2050,6 +2129,10 @@ export function createWatchdog(options = {}) {
       const previousUserIndex = handlerStates.get("user_index") || getRuntimeUserIndex();
       const previousGroupIndex = handlerStates.get("group_index") || getRuntimeGroupIndex();
       const scanResult = await rebuildCurrentPathIndexAsync([userRoot]);
+      await mergeObjectStorageCustomwarePrefixIntoShards(
+        scanResult.shards,
+        `L2/${normalizedUsername}/`
+      );
       const nextShardValue = scanResult.shards[shardId] || Object.create(null);
       const changes = replaceFileIndexShard(shardId, nextShardValue, {
         fullyLoaded: true

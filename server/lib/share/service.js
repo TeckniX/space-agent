@@ -18,6 +18,12 @@ import {
 } from "../utils/runtime_params.js";
 import { createGuestUser } from "../auth/user_manage.js";
 import { buildUserAbsolutePath } from "../auth/user_files.js";
+import {
+  getObjectBytes,
+  headObject,
+  isObjectStorageConfigured,
+  putObjectBytes
+} from "../storage/object_storage.js";
 
 const CLOUD_SHARE_MAX_BYTES = 2 * 1024 * 1024;
 const SHARE_TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -158,11 +164,30 @@ function getConfiguredCustomwareRoot(projectRoot, runtimeParams) {
   return path.resolve(String(projectRoot || ""), configuredPath);
 }
 
+function hostedCloudShareObjectPrefix() {
+  return "share/spaces/";
+}
+
+function buildCloudShareArchiveObjectKey(shareToken) {
+  return `${hostedCloudShareObjectPrefix()}${shareToken}.zip`;
+}
+
+function buildCloudShareMetaObjectKey(shareToken) {
+  return `${hostedCloudShareObjectPrefix()}${shareToken}.json`;
+}
+
 function getCloudShareStoreRoot(projectRoot, runtimeParams) {
+  if (isObjectStorageConfigured(runtimeParams)) {
+    return "";
+  }
+
   const customwareRoot = getConfiguredCustomwareRoot(projectRoot, runtimeParams);
 
   if (!customwareRoot) {
-    throw createShareError("Hosted cloud sharing requires CUSTOMWARE_PATH.", 503);
+    throw createShareError(
+      "Hosted cloud sharing requires CUSTOMWARE_PATH or object storage (OBJECT_STORAGE_*).",
+      503
+    );
   }
 
   return path.join(customwareRoot, "share", "spaces");
@@ -182,9 +207,20 @@ function buildCloudShareMetaPath(shareStoreRoot, shareToken) {
   return path.join(shareStoreRoot, shareToken + ".json");
 }
 
-async function findAvailableCloudShareToken(shareStoreRoot) {
+async function findAvailableCloudShareToken(shareStoreRoot, runtimeParams) {
   for (let attempt = 0; attempt < 64; attempt += 1) {
     const shareToken = createShareToken();
+
+    if (isObjectStorageConfigured(runtimeParams)) {
+      try {
+        await headObject(runtimeParams, buildCloudShareArchiveObjectKey(shareToken));
+      } catch {
+        return shareToken;
+      }
+
+      continue;
+    }
+
     const archivePath = buildCloudShareArchivePath(shareStoreRoot, shareToken);
 
     try {
@@ -201,7 +237,17 @@ async function findAvailableCloudShareToken(shareStoreRoot) {
   throw createShareError("Failed to allocate a cloud share token.", 500);
 }
 
-async function writeCloudShareMetaFile(metaPath, metadata) {
+async function writeCloudShareMetaFile(metaPath, metadata, runtimeParams = null, shareToken = "") {
+  if (isObjectStorageConfigured(runtimeParams) && shareToken) {
+    await putObjectBytes(
+      runtimeParams,
+      buildCloudShareMetaObjectKey(shareToken),
+      Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`, "utf8"),
+      "application/json"
+    );
+    return;
+  }
+
   await fsp.writeFile(metaPath, JSON.stringify(metadata, null, 2) + "\n", "utf8");
 }
 
@@ -227,8 +273,10 @@ async function createHostedCloudShare(options = {}) {
   }
 
   const encryptionMeta = normalizeCloudShareEncryptionMeta(options.meta || {});
-  const shareStoreRoot = await ensureCloudShareStoreRoot(options.projectRoot, options.runtimeParams);
-  const shareToken = await findAvailableCloudShareToken(shareStoreRoot);
+  const shareStoreRoot = isObjectStorageConfigured(options.runtimeParams)
+    ? ""
+    : await ensureCloudShareStoreRoot(options.projectRoot, options.runtimeParams);
+  const shareToken = await findAvailableCloudShareToken(shareStoreRoot, options.runtimeParams);
   const createdAt = new Date().toISOString();
   const metadata = {
     createdAt,
@@ -239,8 +287,18 @@ async function createHostedCloudShare(options = {}) {
     token: shareToken
   };
 
-  await fsp.writeFile(buildCloudShareArchivePath(shareStoreRoot, shareToken), payloadBuffer);
-  await writeCloudShareMetaFile(buildCloudShareMetaPath(shareStoreRoot, shareToken), metadata);
+  if (isObjectStorageConfigured(options.runtimeParams)) {
+    await putObjectBytes(
+      options.runtimeParams,
+      buildCloudShareArchiveObjectKey(shareToken),
+      payloadBuffer,
+      "application/zip"
+    );
+    await writeCloudShareMetaFile("", metadata, options.runtimeParams, shareToken);
+  } else {
+    await fsp.writeFile(buildCloudShareArchivePath(shareStoreRoot, shareToken), payloadBuffer);
+    await writeCloudShareMetaFile(buildCloudShareMetaPath(shareStoreRoot, shareToken), metadata);
+  }
 
   return {
     shareToken,
@@ -256,17 +314,29 @@ async function readHostedCloudShareMeta(projectRoot, runtimeParams, rawShareToke
   }
 
   const shareStoreRoot = getCloudShareStoreRoot(projectRoot, runtimeParams);
-  const metaPath = buildCloudShareMetaPath(shareStoreRoot, shareToken);
   let sourceText = "";
+  let metaPath = "";
 
-  try {
-    sourceText = await fsp.readFile(metaPath, "utf8");
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
+  if (isObjectStorageConfigured(runtimeParams)) {
+    metaPath = buildCloudShareMetaObjectKey(shareToken);
+
+    try {
+      sourceText = (await getObjectBytes(runtimeParams, metaPath)).toString("utf8");
+    } catch {
       throw createShareError("Cloud share not found.", 404);
     }
+  } else {
+    metaPath = buildCloudShareMetaPath(shareStoreRoot, shareToken);
 
-    throw error;
+    try {
+      sourceText = await fsp.readFile(metaPath, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        throw createShareError("Cloud share not found.", 404);
+      }
+
+      throw error;
+    }
   }
 
   let metadata;
@@ -287,17 +357,29 @@ async function readHostedCloudShareMeta(projectRoot, runtimeParams, rawShareToke
 
 async function readHostedCloudShareArchive(projectRoot, runtimeParams, rawShareToken) {
   const shareInfo = await readHostedCloudShareMeta(projectRoot, runtimeParams, rawShareToken);
-  const archivePath = buildCloudShareArchivePath(shareInfo.shareStoreRoot, shareInfo.shareToken);
   let payloadBuffer;
+  let archivePath = "";
 
-  try {
-    payloadBuffer = await fsp.readFile(archivePath);
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
+  if (isObjectStorageConfigured(runtimeParams)) {
+    archivePath = buildCloudShareArchiveObjectKey(shareInfo.shareToken);
+
+    try {
+      payloadBuffer = await getObjectBytes(runtimeParams, archivePath);
+    } catch {
       throw createShareError("Cloud share not found.", 404);
     }
+  } else {
+    archivePath = buildCloudShareArchivePath(shareInfo.shareStoreRoot, shareInfo.shareToken);
 
-    throw error;
+    try {
+      payloadBuffer = await fsp.readFile(archivePath);
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        throw createShareError("Cloud share not found.", 404);
+      }
+
+      throw error;
+    }
   }
 
   return {
@@ -310,7 +392,12 @@ async function readHostedCloudShareArchive(projectRoot, runtimeParams, rawShareT
 async function updateHostedCloudShareLastUsed(projectRoot, runtimeParams, rawShareToken) {
   const shareInfo = await readHostedCloudShareMeta(projectRoot, runtimeParams, rawShareToken);
   shareInfo.metadata.lastUsedAt = new Date().toISOString();
-  await writeCloudShareMetaFile(shareInfo.metaPath, shareInfo.metadata);
+  await writeCloudShareMetaFile(
+    shareInfo.metaPath,
+    shareInfo.metadata,
+    runtimeParams,
+    shareInfo.shareToken
+  );
   return shareInfo.metadata;
 }
 
@@ -712,7 +799,7 @@ async function cloneHostedCloudShareToGuest(options = {}) {
   });
 
   try {
-    const guestAccount = createGuestUser(options.projectRoot, {
+    const guestAccount = await createGuestUser(options.projectRoot, {
       runtimeParams: options.runtimeParams
     });
     const destinationId = await createNextImportedSpaceId(

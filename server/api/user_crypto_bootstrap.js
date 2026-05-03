@@ -20,15 +20,15 @@ function readPayload(context) {
     : {};
 }
 
-function buildUserCryptoPayload(context, username) {
-  const userCryptoState = getUserCryptoState(context.projectRoot, username, context.runtimeParams);
+async function buildUserCryptoPayload(context, username) {
+  const userCryptoState = await getUserCryptoState(context.projectRoot, username, context.runtimeParams);
 
   return {
     keyId: userCryptoState.keyId,
     record: buildClientUserCryptoRecord(userCryptoState.record),
     serverShare:
       userCryptoState.status === USER_CRYPTO_STATUS_READY
-        ? readUserCryptoServerShare(context.projectRoot, username, {
+        ? await readUserCryptoServerShare(context.projectRoot, username, {
             record: userCryptoState.record,
             runtimeParams: context.runtimeParams
           })
@@ -45,7 +45,7 @@ export async function post(context) {
   }
 
   const payload = readPayload(context);
-  const currentPayload = buildUserCryptoPayload(context, username);
+  const currentPayload = await buildUserCryptoPayload(context, username);
 
   if (currentPayload.state !== "missing") {
     return currentPayload;

@@ -38,7 +38,7 @@ async function handleDelete(context) {
         watchdog: context.watchdog
       };
 
-      return hasBatchDelete(payload) ? deleteAppPaths(options) : deleteAppPath(options);
+      return hasBatchDelete(payload) ? await deleteAppPaths(options) : await deleteAppPath(options);
     });
   } catch (error) {
     throw createHttpError(error.message || "File delete failed.", Number(error.statusCode) || 500);

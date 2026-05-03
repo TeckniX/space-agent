@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -14,11 +14,33 @@ function createStaticRuntimeParams(values = {}) {
   };
 }
 
+function createPathIndexWatchdog(projectRoot) {
+  const paths = Object.create(null);
+  const notesPath = "/app/L2/alice/notes.txt";
+  const userDir = "/app/L2/alice/";
+  paths[userDir] = { isDirectory: true, mtimeMs: 0, sizeBytes: 0 };
+  paths[notesPath] = { isDirectory: false, mtimeMs: Date.now(), sizeBytes: 0 };
+
+  return {
+    getIndex(name) {
+      if (name === "path_index") {
+        return paths;
+      }
+
+      return null;
+    },
+    getPaths() {
+      return Object.keys(paths).sort((left, right) => left.localeCompare(right));
+    }
+  };
+}
+
 function createWriteOptions(projectRoot, overrides = {}) {
   return {
     projectRoot,
     runtimeParams: createStaticRuntimeParams({ USER_FOLDER_SIZE_LIMIT_BYTES: 0 }),
     username: "alice",
+    watchdog: createPathIndexWatchdog(projectRoot),
     ...overrides
   };
 }
@@ -29,12 +51,14 @@ async function readUserFile(projectRoot, relativePath) {
 
 test("writeAppFile supports append, prepend, and insert operations", async (testContext) => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "space-file-write-"));
+  await mkdir(path.join(projectRoot, "app", "L2", "alice"), { recursive: true });
+  await writeFile(path.join(projectRoot, "app", "L2", "alice", "notes.txt"), "", "utf8");
 
   testContext.after(async () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     content: "two\n",
     operation: "append",
@@ -42,7 +66,7 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
   });
   assert.equal(await readUserFile(projectRoot, "notes.txt"), "two\n");
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     content: "three\n",
     operation: "append",
@@ -50,7 +74,7 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
   });
   assert.equal(await readUserFile(projectRoot, "notes.txt"), "two\nthree\n");
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     content: "one\n",
     operation: "prepend",
@@ -58,7 +82,7 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
   });
   assert.equal(await readUserFile(projectRoot, "notes.txt"), "one\ntwo\nthree\n");
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     content: "one-point-five\n",
     line: 2,
@@ -67,7 +91,7 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
   });
   assert.equal(await readUserFile(projectRoot, "notes.txt"), "one\none-point-five\ntwo\nthree\n");
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     after: "two\n",
     content: "two-point-five\n",
@@ -79,7 +103,7 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
     "one\none-point-five\ntwo\ntwo-point-five\nthree\n"
   );
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     before: "three\n",
     content: "before-three\n",
@@ -94,20 +118,22 @@ test("writeAppFile supports append, prepend, and insert operations", async (test
 
 test("writeAppFile rejects invalid insert anchors and encodings", async (testContext) => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "space-file-write-"));
+  await mkdir(path.join(projectRoot, "app", "L2", "alice"), { recursive: true });
+  await writeFile(path.join(projectRoot, "app", "L2", "alice", "notes.txt"), "", "utf8");
 
   testContext.after(async () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
-  writeAppFile({
+  await writeAppFile({
     ...createWriteOptions(projectRoot),
     content: "alpha\nbeta\n",
     path: "~/notes.txt"
   });
 
-  assert.throws(
-    () => {
-      writeAppFile({
+  await assert.rejects(
+    async () => {
+      await writeAppFile({
         ...createWriteOptions(projectRoot),
         content: "gamma\n",
         operation: "insert",
@@ -121,9 +147,9 @@ test("writeAppFile rejects invalid insert anchors and encodings", async (testCon
     }
   );
 
-  assert.throws(
-    () => {
-      writeAppFile({
+  await assert.rejects(
+    async () => {
+      await writeAppFile({
         ...createWriteOptions(projectRoot),
         before: "missing",
         content: "gamma\n",
@@ -138,9 +164,9 @@ test("writeAppFile rejects invalid insert anchors and encodings", async (testCon
     }
   );
 
-  assert.throws(
-    () => {
-      writeAppFile({
+  await assert.rejects(
+    async () => {
+      await writeAppFile({
         ...createWriteOptions(projectRoot),
         content: Buffer.from("gamma").toString("base64"),
         encoding: "base64",

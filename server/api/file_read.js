@@ -42,13 +42,13 @@ async function handleRead(context) {
     };
 
     if (hasBatchRead(payload)) {
-      return readAppFiles({
+      return await readAppFiles({
         ...options,
         files: payload.files
       });
     }
 
-    return readAppFile(options);
+    return await readAppFile(options);
   } catch (error) {
     throw createHttpError(error.message || "File read failed.", Number(error.statusCode) || 500);
   }

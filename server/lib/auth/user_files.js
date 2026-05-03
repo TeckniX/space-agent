@@ -1,6 +1,12 @@
 import fs from "node:fs";
 
 import {
+  fetchIdentityRow,
+  isIdentityDatabaseEnabled,
+  patchIdentityUser,
+  userIdentityExists
+} from "./identity_db.js";
+import {
   normalizeEntityId,
   resolveProjectAbsolutePath
 } from "../customware/layout.js";
@@ -69,20 +75,42 @@ function readJsonObject(filePath, fallback = {}) {
   }
 }
 
-function readUserConfig(projectRoot, username, runtimeParams = null) {
+async function readUserConfig(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const row = await fetchIdentityRow(runtimeParams, normalizeUsername(username));
+
+    if (!row || !row.user_yaml) {
+      return {};
+    }
+
+    return parseSimpleYaml(row.user_yaml);
+  }
+
   const filePath = buildUserAbsolutePath(projectRoot, username, USER_CONFIG_FILENAME, runtimeParams);
   const sourceText = readTextFile(filePath, "");
   return sourceText ? parseSimpleYaml(sourceText) : {};
 }
 
-function writeUserConfig(projectRoot, username, config, runtimeParams = null) {
+async function writeUserConfig(projectRoot, username, config, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const normalizedUsername = normalizeUsername(username);
+    const yamlText = serializeSimpleYaml(config);
+    await patchIdentityUser(runtimeParams, normalizedUsername, { user_yaml: yamlText });
+    return buildUserProjectPath(normalizedUsername, USER_CONFIG_FILENAME);
+  }
+
   const filePath = buildUserAbsolutePath(projectRoot, username, USER_CONFIG_FILENAME, runtimeParams);
   fs.mkdirSync(buildUserAbsolutePath(projectRoot, username, "", runtimeParams), { recursive: true });
   fs.writeFileSync(filePath, serializeSimpleYaml(config), "utf8");
   return filePath;
 }
 
-function readUserPasswordVerifier(projectRoot, username, runtimeParams = null) {
+async function readUserPasswordVerifier(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const row = await fetchIdentityRow(runtimeParams, normalizeUsername(username));
+    return row?.password_json && typeof row.password_json === "object" ? row.password_json : {};
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -92,7 +120,15 @@ function readUserPasswordVerifier(projectRoot, username, runtimeParams = null) {
   return readJsonObject(filePath, {});
 }
 
-function writeUserPasswordVerifier(projectRoot, username, verifier, runtimeParams = null) {
+async function writeUserPasswordVerifier(projectRoot, username, verifier, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const normalizedUsername = normalizeUsername(username);
+    await patchIdentityUser(runtimeParams, normalizedUsername, {
+      password_json: verifier || {}
+    });
+    return buildUserProjectPath(normalizedUsername, `${USER_META_DIRNAME}/${USER_PASSWORD_FILENAME}`);
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -106,7 +142,12 @@ function writeUserPasswordVerifier(projectRoot, username, verifier, runtimeParam
   return filePath;
 }
 
-function readUserLogins(projectRoot, username, runtimeParams = null) {
+async function readUserLogins(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const row = await fetchIdentityRow(runtimeParams, normalizeUsername(username));
+    return row?.logins_json && typeof row.logins_json === "object" ? row.logins_json : {};
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -116,7 +157,13 @@ function readUserLogins(projectRoot, username, runtimeParams = null) {
   return readJsonObject(filePath, {});
 }
 
-function writeUserLogins(projectRoot, username, logins, runtimeParams = null) {
+async function writeUserLogins(projectRoot, username, logins, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const normalizedUsername = normalizeUsername(username);
+    await patchIdentityUser(runtimeParams, normalizedUsername, { logins_json: logins || {} });
+    return buildUserProjectPath(normalizedUsername, `${USER_META_DIRNAME}/${USER_LOGINS_FILENAME}`);
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -130,7 +177,12 @@ function writeUserLogins(projectRoot, username, logins, runtimeParams = null) {
   return filePath;
 }
 
-function readUserCryptoRecord(projectRoot, username, runtimeParams = null) {
+async function readUserCryptoRecord(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const row = await fetchIdentityRow(runtimeParams, normalizeUsername(username));
+    return row?.crypto_json && typeof row.crypto_json === "object" ? row.crypto_json : {};
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -140,7 +192,13 @@ function readUserCryptoRecord(projectRoot, username, runtimeParams = null) {
   return readJsonObject(filePath, {});
 }
 
-function writeUserCryptoRecord(projectRoot, username, record, runtimeParams = null) {
+async function writeUserCryptoRecord(projectRoot, username, record, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const normalizedUsername = normalizeUsername(username);
+    await patchIdentityUser(runtimeParams, normalizedUsername, { crypto_json: record || {} });
+    return buildUserProjectPath(normalizedUsername, `${USER_META_DIRNAME}/${USER_CRYPTO_FILENAME}`);
+  }
+
   const filePath = buildUserAbsolutePath(
     projectRoot,
     username,
@@ -154,7 +212,7 @@ function writeUserCryptoRecord(projectRoot, username, record, runtimeParams = nu
   return filePath;
 }
 
-function ensureUserStructure(projectRoot, username, runtimeParams = null) {
+async function ensureUserStructure(projectRoot, username, runtimeParams = null) {
   const userDir = buildUserAbsolutePath(projectRoot, username, "", runtimeParams);
   const metaDir = buildUserAbsolutePath(projectRoot, username, USER_META_DIRNAME, runtimeParams);
   const modDir = buildUserAbsolutePath(projectRoot, username, "mod", runtimeParams);
@@ -165,6 +223,15 @@ function ensureUserStructure(projectRoot, username, runtimeParams = null) {
     modDir,
     userDir
   };
+}
+
+async function userStorageExists(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    return userIdentityExists(runtimeParams, normalizeUsername(username));
+  }
+
+  const userDir = buildUserAbsolutePath(projectRoot, username, "", runtimeParams);
+  return fs.existsSync(userDir);
 }
 
 export {
@@ -181,6 +248,7 @@ export {
   readUserCryptoRecord,
   readUserLogins,
   readUserPasswordVerifier,
+  userStorageExists,
   writeUserConfig,
   writeUserCryptoRecord,
   writeUserLogins,

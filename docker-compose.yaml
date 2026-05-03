@@ -1,9 +1,39 @@
 # Build the image first: `just docker-build` (tag `space-agent:local`).
-# Writable L1/L2 state lives in the named volume at the same path as `docker-entrypoint.sh`
-# defaults (`CUSTOMWARE_PATH=/srv/space/customware`).
-# Agent configs can be mounted as `~/conf/onscreen-agent.yaml`
+# Compose stack: Space Agent + Postgres (identity/auth rows) + RustFS (S3-compatible L1/L2 + share archives).
+# Host ports: app 3000, RustFS S3 API 9000, console 9001 (change if they conflict).
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: space-agent-postgres
+    environment:
+      POSTGRES_USER: spaceagent
+      POSTGRES_PASSWORD: spaceagent
+      POSTGRES_DB: spaceagent
+    volumes:
+      - space-agent-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spaceagent -d spaceagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: space-agent-rustfs
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - space-agent-rustfs:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+
   space-agent:
     build:
       context: .
@@ -14,7 +44,22 @@ services:
       - "3000:3000"
     volumes:
       - space-agent-customware:/data/customware
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://spaceagent:spaceagent@postgres:5432/spaceagent
+      OBJECT_STORAGE_ENDPOINT: http://rustfs:9000
+      OBJECT_STORAGE_BUCKET: space-agent
+      OBJECT_STORAGE_ACCESS_KEY: rustfsadmin
+      OBJECT_STORAGE_SECRET_KEY: rustfsadmin
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_USE_PATH_STYLE: "true"
     restart: unless-stopped
 
 volumes:
   space-agent-customware:
+  space-agent-pg:
+  space-agent-rustfs:

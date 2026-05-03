@@ -33,7 +33,7 @@ export default class GuestCleanupOversizedJob extends JobBase {
         continue;
       }
 
-      const deleted = await context.runTrackedMutation(() =>
+      const deleted = await context.runTrackedMutation(async () =>
         deleteGuestUser(context.projectRoot, username, {
           runtimeParams: context.runtimeParams
         })

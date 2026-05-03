@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { createPasswordVerifier } from "./passwords.js";
 import { loadAuthKeys } from "./keys_manage.js";
 import { recordAppPathMutations } from "../customware/git_history.js";
+import { deleteIdentityUser, isIdentityDatabaseEnabled, upsertFullIdentityUser } from "./identity_db.js";
 import {
   deleteUserCryptoArtifacts,
   invalidateUserCryptoRecord,
@@ -14,10 +15,12 @@ import {
   ensureUserStructure,
   normalizeUsername,
   readUserConfig,
+  userStorageExists,
   writeUserConfig,
   writeUserLogins,
   writeUserPasswordVerifier
 } from "./user_files.js";
+import { serializeSimpleYaml } from "../../../app/L0/_all/mod/_core/framework/js/yaml-lite.js";
 
 const GUEST_USERNAME_PREFIX = "guest_";
 const GUEST_USERNAME_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -63,7 +66,7 @@ function normalizeFullName(fullName, username) {
   return normalizedFullName || String(username || "");
 }
 
-function createUserInternal(projectRoot, username, password, options = {}, authKeys) {
+async function createUserInternal(projectRoot, username, password, options = {}, authKeys) {
   const normalizedUsername = normalizeUsername(username);
 
   if (!normalizedUsername) {
@@ -73,25 +76,45 @@ function createUserInternal(projectRoot, username, password, options = {}, authK
   const runtimeParams = options.runtimeParams || null;
   const userDir = buildUserAbsolutePath(projectRoot, normalizedUsername, "", runtimeParams);
 
-  if (fs.existsSync(userDir)) {
+  if (await userStorageExists(projectRoot, normalizedUsername, runtimeParams)) {
     if (!options.force) {
       throw new Error(`User already exists: ${normalizedUsername}`);
     }
 
-    fs.rmSync(userDir, { force: true, recursive: true });
+    if (isIdentityDatabaseEnabled(runtimeParams)) {
+      await deleteIdentityUser(runtimeParams, normalizedUsername);
+    } else {
+      fs.rmSync(userDir, { force: true, recursive: true });
+    }
   }
 
-  ensureUserStructure(projectRoot, normalizedUsername, runtimeParams);
-  writeUserConfig(projectRoot, normalizedUsername, {
-    full_name: normalizeFullName(options.fullName, normalizedUsername)
-  }, runtimeParams);
-  writeUserPasswordVerifier(
-    projectRoot,
-    normalizedUsername,
-    createPasswordVerifier(password, authKeys),
-    runtimeParams
-  );
-  writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
+  await ensureUserStructure(projectRoot, normalizedUsername, runtimeParams);
+
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const verifier = createPasswordVerifier(password, authKeys);
+    await upsertFullIdentityUser(runtimeParams, {
+      crypto_json: {},
+      logins_json: {},
+      password_json: verifier,
+      server_share_json: null,
+      user_yaml: serializeSimpleYaml({
+        full_name: normalizeFullName(options.fullName, normalizedUsername)
+      }),
+      username: normalizedUsername
+    });
+  } else {
+    await writeUserConfig(projectRoot, normalizedUsername, {
+      full_name: normalizeFullName(options.fullName, normalizedUsername)
+    }, runtimeParams);
+    await writeUserPasswordVerifier(
+      projectRoot,
+      normalizedUsername,
+      createPasswordVerifier(password, authKeys),
+      runtimeParams
+    );
+    await writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
+  }
+
   recordAppPathMutations(
     {
       projectRoot,
@@ -113,7 +136,7 @@ function createUserInternal(projectRoot, username, password, options = {}, authK
   };
 }
 
-function createUser(projectRoot, username, password, options = {}) {
+async function createUser(projectRoot, username, password, options = {}) {
   return createUserInternal(projectRoot, username, password, options, loadAuthKeys(projectRoot));
 }
 
@@ -121,7 +144,7 @@ function isGuestUsername(username) {
   return normalizeUsername(username).startsWith(GUEST_USERNAME_PREFIX);
 }
 
-function setUserPassword(projectRoot, username, password, options = {}) {
+async function setUserPassword(projectRoot, username, password, options = {}) {
   const authKeys = loadAuthKeys(projectRoot);
   const normalizedUsername = normalizeUsername(username);
   const invalidateUserCrypto = options.invalidateUserCrypto !== false;
@@ -135,26 +158,26 @@ function setUserPassword(projectRoot, username, password, options = {}) {
     throw new Error(`Invalid username: ${String(username || "")}`);
   }
 
-  const currentConfig = readUserConfig(projectRoot, normalizedUsername, runtimeParams);
+  const currentConfig = await readUserConfig(projectRoot, normalizedUsername, runtimeParams);
   const userDir = buildUserAbsolutePath(projectRoot, normalizedUsername, "", runtimeParams);
 
-  if (!fs.existsSync(userDir)) {
+  if (!(await userStorageExists(projectRoot, normalizedUsername, runtimeParams))) {
     throw new Error(`User does not exist: ${normalizedUsername}`);
   }
 
-  ensureUserStructure(projectRoot, normalizedUsername, runtimeParams);
+  await ensureUserStructure(projectRoot, normalizedUsername, runtimeParams);
 
-  writeUserConfig(projectRoot, normalizedUsername, {
+  await writeUserConfig(projectRoot, normalizedUsername, {
     ...removeLegacyPasswordFields(currentConfig),
     full_name: normalizeFullName(currentConfig.full_name, normalizedUsername)
   }, runtimeParams);
-  writeUserPasswordVerifier(
+  await writeUserPasswordVerifier(
     projectRoot,
     normalizedUsername,
     createPasswordVerifier(password, authKeys),
     runtimeParams
   );
-  writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
+  await writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
   recordAppPathMutations(
     {
       projectRoot,
@@ -164,11 +187,11 @@ function setUserPassword(projectRoot, username, password, options = {}) {
   );
 
   if (userCryptoRecord) {
-    writeReadyUserCryptoRecord(projectRoot, normalizedUsername, userCryptoRecord, {
+    await writeReadyUserCryptoRecord(projectRoot, normalizedUsername, userCryptoRecord, {
       runtimeParams
     });
   } else if (invalidateUserCrypto) {
-    invalidateUserCryptoRecord(projectRoot, normalizedUsername, {
+    await invalidateUserCryptoRecord(projectRoot, normalizedUsername, {
       runtimeParams
     });
   }
@@ -179,7 +202,7 @@ function setUserPassword(projectRoot, username, password, options = {}) {
   };
 }
 
-function createGuestUser(projectRoot, options = {}) {
+async function createGuestUser(projectRoot, options = {}) {
   const authKeys = loadAuthKeys(projectRoot);
   const password = String(options.password || createRandomString(GENERATED_PASSWORD_LENGTH, GENERATED_PASSWORD_ALPHABET));
   const runtimeParams = options.runtimeParams || null;
@@ -190,12 +213,12 @@ function createGuestUser(projectRoot, options = {}) {
       GUEST_USERNAME_ALPHABET
     )}`;
 
-    if (fs.existsSync(buildUserAbsolutePath(projectRoot, username, "", runtimeParams))) {
+    if (await userStorageExists(projectRoot, username, runtimeParams)) {
       continue;
     }
 
     try {
-      createUserInternal(projectRoot, username, password, { runtimeParams }, authKeys);
+      await createUserInternal(projectRoot, username, password, { runtimeParams }, authKeys);
     } catch (error) {
       if (String(error?.message || "").startsWith("User already exists:")) {
         continue;
@@ -213,7 +236,7 @@ function createGuestUser(projectRoot, options = {}) {
   throw new Error("Failed to create guest account. Try again.");
 }
 
-function deleteUser(projectRoot, username, options = {}) {
+async function deleteUser(projectRoot, username, options = {}) {
   const normalizedUsername = normalizeUsername(username);
   const runtimeParams = options.runtimeParams || null;
 
@@ -221,17 +244,24 @@ function deleteUser(projectRoot, username, options = {}) {
     throw new Error(`Invalid username: ${String(username || "")}`);
   }
 
-  const userDir = buildUserAbsolutePath(projectRoot, normalizedUsername, "", runtimeParams);
-
-  if (!fs.existsSync(userDir)) {
+  if (!(await userStorageExists(projectRoot, normalizedUsername, runtimeParams))) {
     return false;
   }
 
-  fs.rmSync(userDir, {
-    force: true,
-    recursive: true
-  });
-  deleteUserCryptoArtifacts(projectRoot, normalizedUsername);
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    await deleteIdentityUser(runtimeParams, normalizedUsername);
+  }
+
+  const userDir = buildUserAbsolutePath(projectRoot, normalizedUsername, "", runtimeParams);
+
+  if (fs.existsSync(userDir)) {
+    fs.rmSync(userDir, {
+      force: true,
+      recursive: true
+    });
+  }
+
+  await deleteUserCryptoArtifacts(projectRoot, normalizedUsername, runtimeParams);
   recordAppPathMutations(
     {
       projectRoot,
@@ -243,7 +273,7 @@ function deleteUser(projectRoot, username, options = {}) {
   return true;
 }
 
-function deleteGuestUser(projectRoot, username, options = {}) {
+async function deleteGuestUser(projectRoot, username, options = {}) {
   const normalizedUsername = normalizeUsername(username);
 
   if (!isGuestUsername(normalizedUsername)) {

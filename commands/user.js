@@ -162,7 +162,7 @@ export async function execute(context) {
 
   if (subcommand === "create") {
     const options = parseCreateArgs(subcommandArgs);
-    const result = createUser(context.projectRoot, options.username, options.password, {
+    const result = await createUser(context.projectRoot, options.username, options.password, {
       force: options.force,
       fullName: options.fullName,
       runtimeParams
@@ -180,7 +180,7 @@ export async function execute(context) {
 
   if (subcommand === "password" || subcommand === "passwd") {
     const options = parsePasswordArgs(subcommandArgs);
-    const result = setUserPassword(context.projectRoot, options.username, options.password, {
+    const result = await setUserPassword(context.projectRoot, options.username, options.password, {
       runtimeParams
     });
     await flushGitHistoryCommits({ throwOnError: true });

@@ -19,10 +19,52 @@ WORKERS:
   default: 1
   frontend_exposed: false
 CUSTOMWARE_PATH:
-  description: Optional absolute or project-relative directory that owns writable L1/ and L2/ roots as CUSTOMWARE_PATH/L1 and CUSTOMWARE_PATH/L2.
+  description: Optional absolute or project-relative directory that owns writable L1/ and L2/ roots as CUSTOMWARE_PATH/L1 and CUSTOMWARE_PATH/L2. When object storage is configured, L1/L2 content is stored in the bucket while this path can still be used for local Git history and caches.
   type: text
   allowed: ["*"]
   default: ""
+  frontend_exposed: false
+DATABASE_URL:
+  description: Optional Postgres connection URL. When set, user identity and auth artifacts (user.yaml, password, sessions, user crypto metadata) are stored in Postgres instead of L2 files.
+  type: text
+  allowed: ["*"]
+  default: ""
+  frontend_exposed: false
+OBJECT_STORAGE_ENDPOINT:
+  description: S3-compatible endpoint URL (e.g. RustFS http://rustfs:9000) for L1/L2 customware blobs and hosted cloud-share archives.
+  type: text
+  allowed: ["*"]
+  default: ""
+  frontend_exposed: false
+OBJECT_STORAGE_BUCKET:
+  description: Bucket name for OBJECT_STORAGE_ENDPOINT.
+  type: text
+  allowed: ["*"]
+  default: ""
+  frontend_exposed: false
+OBJECT_STORAGE_ACCESS_KEY:
+  description: Access key for the S3-compatible object store.
+  type: text
+  allowed: ["*"]
+  default: ""
+  frontend_exposed: false
+OBJECT_STORAGE_SECRET_KEY:
+  description: Secret key for the S3-compatible object store.
+  type: text
+  allowed: ["*"]
+  default: ""
+  frontend_exposed: false
+OBJECT_STORAGE_REGION:
+  description: AWS region string used by the SDK for signing (any value is fine for RustFS/MinIO).
+  type: text
+  allowed: ["*"]
+  default: us-east-1
+  frontend_exposed: false
+OBJECT_STORAGE_USE_PATH_STYLE:
+  description: Use path-style S3 URLs (required for most RustFS/MinIO deployments).
+  type: boolean
+  allowed: [true, false]
+  default: true
   frontend_exposed: false
 CUSTOMWARE_WATCHDOG:
   description: Enable live customware fs.watch listeners, config watching, and the periodic reconcile backstop. Set to false to keep startup indexing and explicit mutation sync but disable background watch activity.

@@ -95,6 +95,117 @@ function serializeUserIndexSnapshot(snapshot = {}) {
   };
 }
 
+function removeUserSessions(users, sessions, username) {
+  for (const [sessionVerifier, session] of Object.entries(sessions)) {
+    if (String(session?.username || "") === username) {
+      delete sessions[sessionVerifier];
+    }
+  }
+
+  if (users[username]) {
+    users[username].sessions = [];
+  }
+}
+
+function applyIdentityRowToUserIndex(users, sessions, errors, row) {
+  const username = String(row?.username || "").trim();
+
+  if (!username) {
+    return;
+  }
+
+  removeUserSessions(users, sessions, username);
+  const userRecord = ensureUser(users, username);
+  userRecord.projectDir = `/app/L2/${username}/`;
+  userRecord.userConfigPath = `/app/L2/${username}/user.yaml`;
+  userRecord.passwordPath = `/app/L2/${username}/meta/password.json`;
+  userRecord.loginsPath = `/app/L2/${username}/meta/logins.json`;
+
+  try {
+    const parsedConfig = row.user_yaml ? parseSimpleYaml(row.user_yaml) : {};
+    userRecord.fullName = String(parsedConfig.full_name || "").trim() || username;
+  } catch (error) {
+    errors.push({
+      message: `Failed to parse user.yaml from identity store: ${error.message}`,
+      projectPath: userRecord.userConfigPath
+    });
+    userRecord.fullName = username;
+  }
+
+  try {
+    const passwordRecord = inspectPasswordRecord(row.password_json || {});
+    userRecord.hasPassword = Boolean(passwordRecord);
+
+    if (!passwordRecord) {
+      errors.push({
+        message: "Ignored invalid or unsealed password.json verifier from identity store.",
+        projectPath: userRecord.passwordPath
+      });
+    }
+  } catch (error) {
+    errors.push({
+      message: `Failed to parse password.json from identity store: ${error.message}`,
+      projectPath: userRecord.passwordPath
+    });
+  }
+
+  const parsedLogins = row.logins_json && typeof row.logins_json === "object" ? row.logins_json : {};
+
+  Object.entries(parsedLogins).forEach(([sessionVerifier, details]) => {
+    const normalizedVerifier = String(sessionVerifier || "").trim();
+
+    if (!normalizedVerifier) {
+      return;
+    }
+
+    if (sessions[normalizedVerifier]) {
+      errors.push({
+        message: "Ignored duplicate session verifier across users.",
+        projectPath: userRecord.loginsPath,
+        sessionVerifier: normalizedVerifier
+      });
+      return;
+    }
+
+    const sessionDetails =
+      details && typeof details === "object" && !Array.isArray(details) ? { ...details } : {};
+
+    const sessionRecord = {
+      ...sessionDetails,
+      loginsPath: userRecord.loginsPath,
+      sessionVerifier: normalizedVerifier,
+      username
+    };
+
+    sessions[normalizedVerifier] = sessionRecord;
+    userRecord.sessions.push(sessionRecord);
+  });
+
+  userRecord.sessions.sort((left, right) =>
+    String(left.sessionVerifier || "").localeCompare(String(right.sessionVerifier || ""))
+  );
+}
+
+function mergeIdentityRowsIntoSerializedSnapshot(serializedSnapshot, identityRows) {
+  const next = {
+    errors: [...(serializedSnapshot.errors || [])],
+    sessions: { ...(serializedSnapshot.sessions || {}) },
+    users: { ...(serializedSnapshot.users || {}) }
+  };
+
+  for (const row of Array.isArray(identityRows) ? identityRows : []) {
+    applyIdentityRowToUserIndex(next.users, next.sessions, next.errors, row);
+  }
+
+  Object.values(next.users).forEach((userRecord) => {
+    if (!userRecord.fullName) {
+      userRecord.fullName = userRecord.username;
+    }
+  });
+
+  return next;
+}
+
 function buildUserIndexSnapshot(context = {}) {
   const filePaths = Array.isArray(context.filePaths) ? context.filePaths : [];
   const projectRoot = String(context.projectRoot || "");
@@ -226,16 +337,26 @@ function buildUserIndexSnapshot(context = {}) {
     );
   });
 
-  return hydrateUserIndexSnapshot({
+  let hydrated = hydrateUserIndexSnapshot({
     errors,
     sessions,
     users
   });
+
+  if (Array.isArray(context.identityRows) && context.identityRows.length > 0) {
+    const serialized = serializeUserIndexSnapshot(hydrated);
+    hydrated = hydrateUserIndexSnapshot(
+      mergeIdentityRowsIntoSerializedSnapshot(serialized, context.identityRows)
+    );
+  }
+
+  return hydrated;
 }
 
 export {
   buildUserIndexSnapshot,
   createEmptyUserIndex,
   hydrateUserIndexSnapshot,
+  mergeIdentityRowsIntoSerializedSnapshot,
   serializeUserIndexSnapshot
 };

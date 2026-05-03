@@ -516,8 +516,8 @@ export function createAuthService(options = {}) {
     try {
       let changed = false;
       const changedProjectPaths = new Set();
-      const passwordRecord = readUserPasswordVerifier(projectRoot, normalizedUsername, runtimeParams);
-      const currentLogins = readUserLogins(projectRoot, normalizedUsername, runtimeParams);
+      const passwordRecord = await readUserPasswordVerifier(projectRoot, normalizedUsername, runtimeParams);
+      const currentLogins = await readUserLogins(projectRoot, normalizedUsername, runtimeParams);
       const passwordRecordInfo = inspectPasswordRecord(passwordRecord);
       const migratedPasswordRecord =
         passwordRecordInfo?.format === "sealed"
@@ -533,7 +533,7 @@ export function createAuthService(options = {}) {
         migratedPasswordRecord &&
         JSON.stringify(passwordRecord || {}) !== JSON.stringify(migratedPasswordRecord)
       ) {
-        writeUserPasswordVerifier(projectRoot, normalizedUsername, migratedPasswordRecord, runtimeParams);
+        await writeUserPasswordVerifier(projectRoot, normalizedUsername, migratedPasswordRecord, runtimeParams);
         recordAppPathMutations(
           {
             projectRoot,
@@ -546,7 +546,7 @@ export function createAuthService(options = {}) {
       }
 
       if (JSON.stringify(currentLogins || {}) !== JSON.stringify(sanitizedLogins)) {
-        writeUserLogins(projectRoot, normalizedUsername, sanitizedLogins, runtimeParams);
+        await writeUserLogins(projectRoot, normalizedUsername, sanitizedLogins, runtimeParams);
         recordAppPathMutations(
           {
             projectRoot,
@@ -592,32 +592,32 @@ export function createAuthService(options = {}) {
     return normalizedUsername;
   }
 
-  function readCurrentPasswordVerifier(username) {
+  async function readCurrentPasswordVerifier(username) {
     return openPasswordVerifierRecord(
-      readUserPasswordVerifier(projectRoot, username, runtimeParams),
+      await readUserPasswordVerifier(projectRoot, username, runtimeParams),
       authKeys
     );
   }
 
-  function readCurrentUserCryptoState(username) {
+  async function readCurrentUserCryptoState(username) {
     return getUserCryptoState(projectRoot, username, runtimeParams);
   }
 
-  function buildLoginUserCryptoPayload(username) {
-    const userCryptoState = readCurrentUserCryptoState(username);
+  async function buildLoginUserCryptoPayload(username) {
+    const userCryptoState = await readCurrentUserCryptoState(username);
 
     return {
       keyId: userCryptoState.keyId,
       record: buildClientUserCryptoRecord(userCryptoState.record),
       serverShare:
         userCryptoState.status === USER_CRYPTO_STATUS_READY
-          ? readUserCryptoServerShare(projectRoot, username)
+          ? await readUserCryptoServerShare(projectRoot, username, { runtimeParams })
           : "",
       state: userCryptoState.status
     };
   }
 
-  function persistSessionForUser(username, options = {}) {
+  async function persistSessionForUser(username, options = {}) {
     const normalizedUsername = normalizeEntityId(username);
 
     if (!normalizedUsername) {
@@ -628,7 +628,7 @@ export function createAuthService(options = {}) {
     const sessionId = createSessionId();
     const sessionVerifier = createSessionVerifier(sessionToken, authKeys);
     const logins = sanitizeStoredLogins(
-      readUserLogins(projectRoot, normalizedUsername, runtimeParams),
+      await readUserLogins(projectRoot, normalizedUsername, runtimeParams),
       normalizedUsername,
       authKeys
     );
@@ -644,7 +644,7 @@ export function createAuthService(options = {}) {
       authKeys
     );
 
-    writeUserLogins(projectRoot, normalizedUsername, logins, runtimeParams);
+    await writeUserLogins(projectRoot, normalizedUsername, logins, runtimeParams);
     recordAppPathMutations(
       {
         projectRoot,
@@ -761,9 +761,9 @@ export function createAuthService(options = {}) {
     const userRecord = userIndex.getUser(normalizedUsername);
     const verifier =
       normalizedUsername && normalizedClientNonce && userRecord?.hasPassword
-        ? readCurrentPasswordVerifier(normalizedUsername)
+        ? await readCurrentPasswordVerifier(normalizedUsername)
         : null;
-    const userCryptoState = verifier ? readCurrentUserCryptoState(normalizedUsername) : null;
+    const userCryptoState = verifier ? await readCurrentUserCryptoState(normalizedUsername) : null;
     const userCryptoProvisioningShare =
       userCryptoState?.status === "missing" ? createUserCryptoServerShare() : "";
 
@@ -820,7 +820,7 @@ export function createAuthService(options = {}) {
     await ensureUserIndexLoaded(challenge.username);
 
     const verifier = getUserIndex().getUser(challenge.username)?.hasPassword
-      ? readCurrentPasswordVerifier(challenge.username)
+      ? await readCurrentPasswordVerifier(challenge.username)
       : null;
 
     if (!verifier) {
@@ -856,14 +856,14 @@ export function createAuthService(options = {}) {
         throw new Error("Login requires user crypto provisioning. Try again.");
       }
 
-      provisionUserCrypto(projectRoot, challenge.username, {
+      await provisionUserCrypto(projectRoot, challenge.username, {
         record: provisioningRecord,
         runtimeParams,
         serverShare: challenge.userCryptoProvisioningShare
       });
     }
 
-    const session = persistSessionForUser(challenge.username, {
+    const session = await persistSessionForUser(challenge.username, {
       requestInfo: resolvedRequestInfo
     });
 
@@ -871,7 +871,7 @@ export function createAuthService(options = {}) {
       serverSignature: loginResult.serverSignature,
       sessionId: session.sessionId,
       sessionToken: session.sessionToken,
-      userCrypto: buildLoginUserCryptoPayload(challenge.username),
+      userCrypto: await buildLoginUserCryptoPayload(challenge.username),
       username: challenge.username
     };
   }
@@ -887,7 +887,7 @@ export function createAuthService(options = {}) {
 
     await ensureUserIndexLoaded(username);
 
-    return persistSessionForUser(username, {
+    return await persistSessionForUser(username, {
       req,
       requestInfo
     });
@@ -907,7 +907,7 @@ export function createAuthService(options = {}) {
 
     const sessionVerifier = createSessionVerifier(normalizedSessionToken, authKeys);
     const logins = sanitizeStoredLogins(
-      readUserLogins(projectRoot, normalizedUsername, runtimeParams),
+      await readUserLogins(projectRoot, normalizedUsername, runtimeParams),
       normalizedUsername,
       authKeys
     );
@@ -917,7 +917,7 @@ export function createAuthService(options = {}) {
     }
 
     delete logins[sessionVerifier];
-    writeUserLogins(projectRoot, normalizedUsername, logins, runtimeParams);
+    await writeUserLogins(projectRoot, normalizedUsername, logins, runtimeParams);
     recordAppPathMutations(
       {
         projectRoot,
@@ -938,15 +938,15 @@ export function createAuthService(options = {}) {
     return createUserCryptoSessionStorageKey(authenticatedUser?.session?.sessionId, authKeys);
   }
 
-  function changePassword({ currentPassword, newPassword, requestUser, userCryptoRecord }) {
+  async function changePassword({ currentPassword, newPassword, requestUser, userCryptoRecord }) {
     if (isSingleUserApp(runtimeParams)) {
       throw createStatusError("Password login is disabled in single-user mode.", 403);
     }
 
     const authenticatedUser = getAuthenticatedUser(requestUser);
     const normalizedUsername = normalizeEntityId(authenticatedUser.username);
-    const verifier = normalizedUsername ? readCurrentPasswordVerifier(normalizedUsername) : null;
-    const userCryptoState = normalizedUsername ? readCurrentUserCryptoState(normalizedUsername) : null;
+    const verifier = normalizedUsername ? await readCurrentPasswordVerifier(normalizedUsername) : null;
+    const userCryptoState = normalizedUsername ? await readCurrentUserCryptoState(normalizedUsername) : null;
 
     if (!verifier || !verifyPassword(currentPassword, verifier)) {
       throw createStatusError("Current password is incorrect.", 401);
@@ -956,7 +956,7 @@ export function createAuthService(options = {}) {
       throw createStatusError("Current login must rewrap user crypto before changing the password.", 400);
     }
 
-    setUserPassword(projectRoot, normalizedUsername, newPassword, {
+    await setUserPassword(projectRoot, normalizedUsername, newPassword, {
       invalidateUserCrypto: false,
       runtimeParams,
       userCryptoRecord:

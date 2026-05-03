@@ -84,6 +84,11 @@ async function createServerBootstrap(overrides = {}) {
   ensureCustomwareDirectories(projectRoot, runtimeParams);
   ensureServerTmpDir(tmpDir);
 
+  const { ensureIdentitySchemaIfConfigured } = await import("./lib/auth/identity_db.js");
+  await ensureIdentitySchemaIfConfigured(runtimeParams);
+  const { ensureObjectStorageBucketIfConfigured } = await import("./lib/storage/object_storage.js");
+  await ensureObjectStorageBucketIfConfigured(runtimeParams);
+
   return {
     apiDir,
     appDir,

@@ -8,6 +8,12 @@ import {
 } from "node:crypto";
 
 import { recordAppPathMutations } from "../customware/git_history.js";
+import {
+  clearIdentityServerShare,
+  fetchIdentityRow,
+  isIdentityDatabaseEnabled,
+  patchIdentityUser
+} from "./identity_db.js";
 import { ensureAuthDataDir, loadAuthKeys } from "./keys_manage.js";
 import {
   USER_CRYPTO_FILENAME,
@@ -335,21 +341,30 @@ function openUserCryptoServerShare(record, authKeys) {
   }
 }
 
-function readUserCryptoServerShare(projectRoot, username, options = {}) {
+async function readUserCryptoServerShare(projectRoot, username, options = {}) {
   const filePath = buildUserCryptoShareFilePath(projectRoot, username);
   const runtimeParams = options.runtimeParams || null;
   const record = normalizeUserCryptoRecord(
-    options.record || readUserCryptoRecord(projectRoot, username, runtimeParams)
+    options.record || (await readUserCryptoRecord(projectRoot, username, runtimeParams))
   );
 
-  try {
-    setPermissionsIfPossible(filePath, 0o600);
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    const serverShare = normalizeBase64Url(parsed?.server_share || parsed?.serverShare);
-    return decodeBase64Url(serverShare).length === USER_CRYPTO_SECRET_LENGTH ? serverShare : "";
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      return "";
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const row = await fetchIdentityRow(runtimeParams, normalizeUsername(username));
+    const payload = row?.server_share_json;
+    const serverShare = normalizeBase64Url(payload?.server_share || payload?.serverShare);
+    if (decodeBase64Url(serverShare).length === USER_CRYPTO_SECRET_LENGTH) {
+      return serverShare;
+    }
+  } else {
+    try {
+      setPermissionsIfPossible(filePath, 0o600);
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const serverShare = normalizeBase64Url(parsed?.server_share || parsed?.serverShare);
+      return decodeBase64Url(serverShare).length === USER_CRYPTO_SECRET_LENGTH ? serverShare : "";
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        return "";
+      }
     }
   }
 
@@ -360,7 +375,7 @@ function readUserCryptoServerShare(projectRoot, username, options = {}) {
   return openUserCryptoServerShare(record, loadAuthKeys(projectRoot));
 }
 
-function writeUserCryptoServerShare(projectRoot, username, serverShare) {
+async function writeUserCryptoServerShare(projectRoot, username, serverShare, runtimeParams = null) {
   const normalizedUsername = normalizeUsername(username);
   const normalizedServerShare = normalizeBase64Url(serverShare);
 
@@ -370,6 +385,16 @@ function writeUserCryptoServerShare(projectRoot, username, serverShare) {
 
   if (decodeBase64Url(normalizedServerShare).length !== USER_CRYPTO_SECRET_LENGTH) {
     throw new Error("Invalid user crypto server share.");
+  }
+
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    await patchIdentityUser(runtimeParams, normalizedUsername, {
+      server_share_json: {
+        server_share: normalizedServerShare,
+        updated_at: new Date().toISOString()
+      }
+    });
+    return buildUserCryptoShareFilePath(projectRoot, normalizedUsername);
   }
 
   ensureUserCryptoShareDir(projectRoot);
@@ -393,7 +418,17 @@ function writeUserCryptoServerShare(projectRoot, username, serverShare) {
   return filePath;
 }
 
-function deleteUserCryptoServerShare(projectRoot, username) {
+async function deleteUserCryptoServerShare(projectRoot, username, runtimeParams = null) {
+  if (isIdentityDatabaseEnabled(runtimeParams)) {
+    const normalizedUsername = normalizeUsername(username);
+
+    if (!normalizedUsername) {
+      return false;
+    }
+
+    return clearIdentityServerShare(runtimeParams, normalizedUsername);
+  }
+
   const filePath = buildUserCryptoShareFilePath(projectRoot, username);
 
   try {
@@ -420,7 +455,7 @@ function buildClientUserCryptoRecord(record) {
   return serializeUserCryptoRecord(normalizedRecord);
 }
 
-function getUserCryptoState(projectRoot, username, runtimeParams = null) {
+async function getUserCryptoState(projectRoot, username, runtimeParams = null) {
   const normalizedUsername = normalizeUsername(username);
 
   if (!normalizedUsername) {
@@ -432,9 +467,9 @@ function getUserCryptoState(projectRoot, username, runtimeParams = null) {
   }
 
   const record = normalizeUserCryptoRecord(
-    readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
+    await readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
   );
-  const serverShare = readUserCryptoServerShare(projectRoot, normalizedUsername, {
+  const serverShare = await readUserCryptoServerShare(projectRoot, normalizedUsername, {
     record,
     runtimeParams
   });
@@ -470,7 +505,7 @@ function getUserCryptoState(projectRoot, username, runtimeParams = null) {
   };
 }
 
-function writeReadyUserCryptoRecord(projectRoot, username, record, options = {}) {
+async function writeReadyUserCryptoRecord(projectRoot, username, record, options = {}) {
   const normalizedUsername = normalizeUsername(username);
   const normalizedRecord = normalizeUserCryptoRecord(record);
   const runtimeParams = options.runtimeParams || null;
@@ -485,19 +520,19 @@ function writeReadyUserCryptoRecord(projectRoot, username, record, options = {})
 
   const authKeys = loadAuthKeys(projectRoot);
   const existingRecord = normalizeUserCryptoRecord(
-    readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
+    await readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
   );
   const serverShare =
     normalizeBase64Url(options.serverShare) ||
-    readUserCryptoServerShare(projectRoot, normalizedUsername, {
+    (await readUserCryptoServerShare(projectRoot, normalizedUsername, {
       record: existingRecord,
       runtimeParams
-    });
+    }));
   const now = new Date().toISOString();
   const sealedServerShare = serverShare
     ? sealUserCryptoServerShare(serverShare, normalizedRecord, authKeys)
     : null;
-  writeUserCryptoRecord(
+  await writeUserCryptoRecord(
     projectRoot,
     normalizedUsername,
     serializeUserCryptoRecord({
@@ -526,7 +561,7 @@ function writeReadyUserCryptoRecord(projectRoot, username, record, options = {})
   };
 }
 
-function provisionUserCrypto(projectRoot, username, options = {}) {
+async function provisionUserCrypto(projectRoot, username, options = {}) {
   const normalizedUsername = normalizeUsername(username);
   const runtimeParams = options.runtimeParams || null;
   const record = options.record;
@@ -536,21 +571,21 @@ function provisionUserCrypto(projectRoot, username, options = {}) {
     throw new Error(`Invalid username: ${String(username || "")}`);
   }
 
-  const writeResult = writeReadyUserCryptoRecord(projectRoot, normalizedUsername, record, {
+  const writeResult = await writeReadyUserCryptoRecord(projectRoot, normalizedUsername, record, {
     serverShare,
     runtimeParams
   });
-  writeUserCryptoServerShare(projectRoot, normalizedUsername, serverShare);
+  await writeUserCryptoServerShare(projectRoot, normalizedUsername, serverShare, runtimeParams);
   return writeResult;
 }
 
-function invalidateUserCryptoRecord(projectRoot, username, options = {}) {
+async function invalidateUserCryptoRecord(projectRoot, username, options = {}) {
   const normalizedUsername = normalizeUsername(username);
   const runtimeParams = options.runtimeParams || null;
   const currentRecord = normalizeUserCryptoRecord(
-    readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
+    await readUserCryptoRecord(projectRoot, normalizedUsername, runtimeParams)
   );
-  const removedServerShare = deleteUserCryptoServerShare(projectRoot, normalizedUsername);
+  const removedServerShare = await deleteUserCryptoServerShare(projectRoot, normalizedUsername, runtimeParams);
 
   if (!normalizedUsername) {
     throw new Error(`Invalid username: ${String(username || "")}`);
@@ -571,7 +606,7 @@ function invalidateUserCryptoRecord(projectRoot, username, options = {}) {
     serverShareTag: _serverShareTag,
     ...recordWithoutServerShare
   } = currentRecord || {};
-  writeUserCryptoRecord(
+  await writeUserCryptoRecord(
     projectRoot,
     normalizedUsername,
     serializeUserCryptoRecord({
@@ -600,8 +635,8 @@ function invalidateUserCryptoRecord(projectRoot, username, options = {}) {
   };
 }
 
-function deleteUserCryptoArtifacts(projectRoot, username) {
-  return deleteUserCryptoServerShare(projectRoot, username);
+async function deleteUserCryptoArtifacts(projectRoot, username, runtimeParams = null) {
+  return deleteUserCryptoServerShare(projectRoot, username, runtimeParams);
 }
 
 export {

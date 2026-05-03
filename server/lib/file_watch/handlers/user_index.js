@@ -1,8 +1,14 @@
 import {
   buildUserIndexSnapshot,
   hydrateUserIndexSnapshot,
+  mergeIdentityRowsIntoSerializedSnapshot,
   serializeUserIndexSnapshot
 } from "../../auth/user_index.js";
+import {
+  fetchAllIdentityRows,
+  fetchIdentityRowsForUsernames,
+  isIdentityDatabaseEnabled
+} from "../../auth/identity_db.js";
 import {
   parseProjectUserConfigPath,
   parseProjectUserDirectoryPath,
@@ -66,16 +72,23 @@ export default class UserIndexHandler extends WatchdogHandler {
     });
   }
 
-  rebuild(context) {
+  rebuild(context, identityRows = null) {
     this.state = buildUserIndexSnapshot({
       filePaths: context.getCurrentPaths(),
+      identityRows: identityRows || undefined,
       projectRoot: this.projectRoot,
       runtimeParams: this.runtimeParams
     });
   }
 
   async onStart(context) {
-    this.rebuild(context);
+    let identityRows = null;
+
+    if (isIdentityDatabaseEnabled(this.runtimeParams)) {
+      identityRows = await fetchAllIdentityRows(this.runtimeParams);
+    }
+
+    this.rebuild(context, identityRows);
   }
 
   async onChanges(context) {
@@ -86,6 +99,10 @@ export default class UserIndexHandler extends WatchdogHandler {
     }
 
     const nextState = serializeUserIndexSnapshot(this.state);
+    const identityRows =
+      isIdentityDatabaseEnabled(this.runtimeParams) && affectedUsernames.length > 0
+        ? await fetchIdentityRowsForUsernames(this.runtimeParams, affectedUsernames)
+        : [];
 
     for (const username of affectedUsernames) {
       removeUserState(nextState, username);
@@ -107,6 +124,13 @@ export default class UserIndexHandler extends WatchdogHandler {
 
       Object.assign(nextState.sessions, serializedPartialSnapshot.sessions);
       nextState.errors.push(...serializedPartialSnapshot.errors);
+    }
+
+    if (identityRows.length > 0) {
+      const merged = mergeIdentityRowsIntoSerializedSnapshot(nextState, identityRows);
+      nextState.users = merged.users;
+      nextState.sessions = merged.sessions;
+      nextState.errors = merged.errors;
     }
 
     this.state = hydrateUserIndexSnapshot(nextState);

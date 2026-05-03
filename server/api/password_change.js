@@ -48,7 +48,7 @@ export async function post(context) {
 
   try {
     const result = await runTrackedMutation(context, async () =>
-      context.auth.changePassword({
+      await context.auth.changePassword({
         currentPassword: payload.currentPassword,
         newPassword: payload.newPassword,
         requestUser: context.user,

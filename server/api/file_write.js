@@ -39,11 +39,11 @@ export async function post(context) {
       };
 
       return hasBatchWrite(payload)
-        ? writeAppFiles({
+        ? await writeAppFiles({
             ...options,
             files: payload.files
           })
-        : writeAppFile(options);
+        : await writeAppFile(options);
     });
   } catch (error) {
     throw createHttpError(error.message || "File write failed.", Number(error.statusCode) || 500);

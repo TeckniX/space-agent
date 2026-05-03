@@ -93,8 +93,10 @@
     "purpose": "Thin mobile-compatible server bridge for fetch proxying and local infrastructure."
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1041.0",
     "archiver": "^7.0.1",
     "electron-updater": "^6.8.3",
-    "isomorphic-git": "^1.37.4"
+    "isomorphic-git": "^1.37.4",
+    "pg": "^8.20.0"
   }
 }

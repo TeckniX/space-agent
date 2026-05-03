@@ -28,6 +28,17 @@ import { createEmptyGroupIndex } from "./overrides.js";
 import { globToRegExp, normalizePathSegment } from "../utils/app_files.js";
 import { isProjectPathWithinMaxLayer, normalizeMaxLayer } from "./layer_limit.js";
 import { FILE_INDEX_AREA } from "../../runtime/state_areas.js";
+import {
+  copyWritableLayerObject,
+  deleteWritableLayerObject,
+  deleteWritableLayerTree,
+  isObjectBackedWritableAppPath,
+  readWritableLayerObject,
+  statWritableLayerObject,
+  writeWritableLayerDirectoryMarker,
+  writeWritableLayerObject
+} from "../storage/customware_storage.js";
+import { isObjectStorageConfigured } from "../storage/object_storage.js";
 
 function createHttpError(message, statusCode) {
   const error = new Error(message);
@@ -792,22 +803,35 @@ function normalizeReadRequests(options = {}) {
         options.runtimeParams
       ),
       encoding: ensureValidReadEncoding(String(request.encoding || options.encoding || "utf8").toLowerCase()),
-      path: toAppRelativePath(resolvedPath.projectPath)
+      path: toAppRelativePath(resolvedPath.projectPath),
+      projectPath: resolvedPath.projectPath
     };
   });
 }
 
-function readAppFiles(options = {}) {
+async function readAppFiles(options = {}) {
   const requests = normalizeReadRequests(options);
-  const files = requests.map((request) => {
-    const buffer = fs.readFileSync(request.absolutePath);
+  const files = await Promise.all(
+    requests.map(async (request) => {
+      let buffer;
 
-    return {
-      content: request.encoding === "base64" ? buffer.toString("base64") : buffer.toString("utf8"),
-      encoding: request.encoding,
-      path: request.path
-    };
-  });
+      if (isObjectBackedWritableAppPath(request.projectPath, options.runtimeParams)) {
+        buffer = await readWritableLayerObject(
+          String(options.projectRoot || ""),
+          request.projectPath,
+          options.runtimeParams
+        );
+      } else {
+        buffer = fs.readFileSync(request.absolutePath);
+      }
+
+      return {
+        content: request.encoding === "base64" ? buffer.toString("base64") : buffer.toString("utf8"),
+        encoding: request.encoding,
+        path: request.path
+      };
+    })
+  );
 
   return {
     count: files.length,
@@ -815,8 +839,8 @@ function readAppFiles(options = {}) {
   };
 }
 
-function readAppFile(options = {}) {
-  return readAppFiles(options).files[0];
+async function readAppFile(options = {}) {
+  return (await readAppFiles(options)).files[0];
 }
 
 function resolveReadableExistingAppPath(options = {}) {
@@ -865,8 +889,22 @@ function resolveReadableExistingAppPath(options = {}) {
   };
 }
 
-function getAppPathInfo(options = {}) {
+async function getAppPathInfo(options = {}) {
   const resolvedPath = resolveReadableExistingAppPath(options);
+
+  if (isObjectBackedWritableAppPath(resolvedPath.projectPath, options.runtimeParams)) {
+    const st = await statWritableLayerObject(options.runtimeParams, resolvedPath.projectPath);
+
+    if (st) {
+      return {
+        isDirectory: st.isDirectory,
+        modifiedAt: new Date(st.mtimeMs).toISOString(),
+        path: resolvedPath.path,
+        size: Number(st.sizeBytes) || 0
+      };
+    }
+  }
+
   const stats = fs.statSync(resolvedPath.absolutePath);
 
   return {
@@ -1029,7 +1067,22 @@ function readExistingWriteBuffer(absolutePath, requestedPath) {
   return fs.readFileSync(absolutePath);
 }
 
-function buildWriteBuffer(options = {}) {
+async function readExistingWriteBufferAsync(options = {}) {
+  const { absolutePath, projectPath, projectRoot, requestedPath, runtimeParams } = options;
+
+  if (isObjectBackedWritableAppPath(projectPath, runtimeParams)) {
+    try {
+      const buf = await readWritableLayerObject(projectRoot, projectPath, runtimeParams);
+      return buf && buf.length ? buf : Buffer.alloc(0);
+    } catch {
+      return Buffer.alloc(0);
+    }
+  }
+
+  return readExistingWriteBuffer(absolutePath, requestedPath);
+}
+
+async function buildWriteBufferAsync(options = {}) {
   const encoding = options.encoding || "utf8";
   const operation = options.operation || "replace";
   const nextContent = String(options.content ?? "");
@@ -1039,7 +1092,7 @@ function buildWriteBuffer(options = {}) {
     return contentBuffer;
   }
 
-  const existingBuffer = readExistingWriteBuffer(options.absolutePath, options.requestedPath);
+  const existingBuffer = await readExistingWriteBufferAsync(options);
 
   if (operation === "append") {
     return Buffer.concat([existingBuffer, contentBuffer]);
@@ -1088,7 +1141,7 @@ function normalizeWriteEntries(options = {}) {
   ];
 }
 
-function normalizeWriteRequests(options = {}) {
+async function normalizeWriteRequests(options = {}) {
   const accessController = createAppAccessController({
     groupIndex: getGroupIndex(options.watchdog, options.runtimeParams),
     runtimeParams: options.runtimeParams,
@@ -1097,7 +1150,8 @@ function normalizeWriteRequests(options = {}) {
   const entries = normalizeWriteEntries(options);
   const seenProjectPaths = new Set();
 
-  return entries.map((entry) => {
+  return Promise.all(
+    entries.map(async (entry) => {
     if (!isPlainObject(entry)) {
       throw createHttpError("Each file write entry must be an object.", 400);
     }
@@ -1157,13 +1211,16 @@ function normalizeWriteRequests(options = {}) {
       normalizedProjectPath,
       options.runtimeParams
     );
-    const buffer = buildWriteBuffer({
+    const buffer = await buildWriteBufferAsync({
       absolutePath,
       content: getExplicitWriteField(entry, options, "content"),
       encoding,
       insertTarget,
       operation,
-      requestedPath
+      projectPath: normalizedProjectPath,
+      projectRoot: String(options.projectRoot || ""),
+      requestedPath,
+      runtimeParams: options.runtimeParams
     });
 
     return {
@@ -1174,11 +1231,12 @@ function normalizeWriteRequests(options = {}) {
       path: toAppRelativePath(normalizedProjectPath),
       projectPath: normalizedProjectPath
     };
-  });
+    })
+  );
 }
 
-function writeAppFiles(options = {}) {
-  const requests = normalizeWriteRequests(options);
+async function writeAppFiles(options = {}) {
+  const requests = await normalizeWriteRequests(options);
   const quotaDeltas = getWriteQuotaDeltas(options, requests);
   const quotaPlan = createQuotaPlan(options, quotaDeltas);
   let totalBytesWritten = 0;
@@ -1186,25 +1244,51 @@ function writeAppFiles(options = {}) {
   let files;
 
   try {
-    files = requests.map((request) => {
-      if (request.isDirectory) {
-        fs.mkdirSync(request.absolutePath, { recursive: true });
+    files = await Promise.all(
+      requests.map(async (request) => {
+        if (request.isDirectory) {
+          if (
+            isObjectStorageConfigured(options.runtimeParams) &&
+            isObjectBackedWritableAppPath(request.projectPath, options.runtimeParams)
+          ) {
+            await writeWritableLayerDirectoryMarker(
+              String(options.projectRoot || ""),
+              request.projectPath,
+              options.runtimeParams
+            );
+          } else {
+            fs.mkdirSync(request.absolutePath, { recursive: true });
+          }
+
+          return {
+            path: request.path
+          };
+        }
+
+        if (
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.projectPath, options.runtimeParams)
+        ) {
+          await writeWritableLayerObject(
+            String(options.projectRoot || ""),
+            request.projectPath,
+            options.runtimeParams,
+            request.buffer
+          );
+        } else {
+          fs.mkdirSync(path.dirname(request.absolutePath), { recursive: true });
+          fs.writeFileSync(request.absolutePath, request.buffer);
+        }
+
+        totalBytesWritten += request.buffer.length;
 
         return {
+          bytesWritten: request.buffer.length,
+          encoding: request.encoding,
           path: request.path
         };
-      }
-
-      fs.mkdirSync(path.dirname(request.absolutePath), { recursive: true });
-      fs.writeFileSync(request.absolutePath, request.buffer);
-      totalBytesWritten += request.buffer.length;
-
-      return {
-        bytesWritten: request.buffer.length,
-        encoding: request.encoding,
-        path: request.path
-      };
-    });
+      })
+    );
   } catch (error) {
     invalidateQuotaDeltas(options, quotaDeltas);
     throw error;
@@ -1228,8 +1312,8 @@ function writeAppFiles(options = {}) {
   };
 }
 
-function writeAppFile(options = {}) {
-  return writeAppFiles(options).files[0];
+async function writeAppFile(options = {}) {
+  return (await writeAppFiles(options)).files[0];
 }
 
 function normalizeTransferEntries(options = {}, actionLabel) {
@@ -1389,6 +1473,18 @@ function copyAbsolutePath(sourceAbsolutePath, destinationAbsolutePath, isDirecto
   });
 }
 
+async function copyStorageBackedPaths(options, request) {
+  if (request.isDirectory) {
+    throw createHttpError("Directory copy for object-backed paths is not supported yet.", 400);
+  }
+
+  await copyWritableLayerObject(
+    options.runtimeParams,
+    request.sourceProjectPath,
+    request.destinationProjectPath
+  );
+}
+
 function moveAbsolutePath(sourceAbsolutePath, destinationAbsolutePath, isDirectory) {
   try {
     fs.renameSync(sourceAbsolutePath, destinationAbsolutePath);
@@ -1405,21 +1501,41 @@ function moveAbsolutePath(sourceAbsolutePath, destinationAbsolutePath, isDirecto
   }
 }
 
-function copyAppPaths(options = {}) {
+async function moveStorageBackedPaths(options, request) {
+  await copyStorageBackedPaths(options, request);
+  await deleteWritableLayerObject(options.runtimeParams, request.sourceProjectPath);
+}
+
+async function copyAppPaths(options = {}) {
   const requests = normalizeTransferRequests(options, "copy");
   const quotaDeltas = getCopyQuotaDeltas(options, requests);
   const quotaPlan = createQuotaPlan(options, quotaDeltas);
   let entries;
 
   try {
-    entries = requests.map((request) => {
-      copyAbsolutePath(request.sourceAbsolutePath, request.destinationAbsolutePath, request.isDirectory);
+    entries = await Promise.all(
+      requests.map(async (request) => {
+        const sourceOs =
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.sourceProjectPath, options.runtimeParams);
+        const destOs =
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.destinationProjectPath, options.runtimeParams);
 
-      return {
-        fromPath: request.fromPath,
-        toPath: request.toPath
-      };
-    });
+        if (sourceOs && destOs) {
+          await copyStorageBackedPaths(options, request);
+        } else if (!sourceOs && !destOs) {
+          copyAbsolutePath(request.sourceAbsolutePath, request.destinationAbsolutePath, request.isDirectory);
+        } else {
+          throw createHttpError("Cannot copy between object storage and local filesystem paths.", 400);
+        }
+
+        return {
+          fromPath: request.fromPath,
+          toPath: request.toPath
+        };
+      })
+    );
   } catch (error) {
     invalidateQuotaDeltas(options, quotaDeltas);
     throw error;
@@ -1442,25 +1558,40 @@ function copyAppPaths(options = {}) {
   };
 }
 
-function copyAppPath(options = {}) {
-  return copyAppPaths(options).entries[0];
+async function copyAppPath(options = {}) {
+  return (await copyAppPaths(options)).entries[0];
 }
 
-function moveAppPaths(options = {}) {
+async function moveAppPaths(options = {}) {
   const requests = normalizeTransferRequests(options, "move");
   const quotaDeltas = getMoveQuotaDeltas(options, requests);
   const quotaPlan = createQuotaPlan(options, quotaDeltas);
   let entries;
 
   try {
-    entries = requests.map((request) => {
-      moveAbsolutePath(request.sourceAbsolutePath, request.destinationAbsolutePath, request.isDirectory);
+    entries = await Promise.all(
+      requests.map(async (request) => {
+        const sourceOs =
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.sourceProjectPath, options.runtimeParams);
+        const destOs =
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.destinationProjectPath, options.runtimeParams);
 
-      return {
-        fromPath: request.fromPath,
-        toPath: request.toPath
-      };
-    });
+        if (sourceOs && destOs) {
+          await moveStorageBackedPaths(options, request);
+        } else if (!sourceOs && !destOs) {
+          moveAbsolutePath(request.sourceAbsolutePath, request.destinationAbsolutePath, request.isDirectory);
+        } else {
+          throw createHttpError("Cannot move between object storage and local filesystem paths.", 400);
+        }
+
+        return {
+          fromPath: request.fromPath,
+          toPath: request.toPath
+        };
+      })
+    );
   } catch (error) {
     invalidateQuotaDeltas(options, quotaDeltas);
     throw error;
@@ -1483,8 +1614,8 @@ function moveAppPaths(options = {}) {
   };
 }
 
-function moveAppPath(options = {}) {
-  return moveAppPaths(options).entries[0];
+async function moveAppPath(options = {}) {
+  return (await moveAppPaths(options)).entries[0];
 }
 
 function normalizeDeleteEntries(options = {}) {
@@ -1564,20 +1695,35 @@ function normalizeDeleteRequests(options = {}) {
   return requests;
 }
 
-function deleteAppPaths(options = {}) {
+async function deleteAppPaths(options = {}) {
   const requests = normalizeDeleteRequests(options);
   const quotaDeltas = getDeleteQuotaDeltas(options, requests);
   const quotaPlan = createQuotaPlan(options, quotaDeltas);
   let paths;
 
   try {
-    paths = requests.map((request) => {
-      fs.rmSync(request.absolutePath, {
-        force: false,
-        recursive: request.isDirectory
-      });
-      return request.path;
-    });
+    paths = await Promise.all(
+      requests.map(async (request) => {
+        const useObjectStorage =
+          isObjectStorageConfigured(options.runtimeParams) &&
+          isObjectBackedWritableAppPath(request.projectPath, options.runtimeParams);
+
+        if (useObjectStorage) {
+          if (request.isDirectory) {
+            await deleteWritableLayerTree(options.runtimeParams, request.projectPath);
+          } else {
+            await deleteWritableLayerObject(options.runtimeParams, request.projectPath);
+          }
+        } else {
+          fs.rmSync(request.absolutePath, {
+            force: false,
+            recursive: request.isDirectory
+          });
+        }
+
+        return request.path;
+      })
+    );
   } catch (error) {
     invalidateQuotaDeltas(options, quotaDeltas);
     throw error;
@@ -1600,9 +1746,9 @@ function deleteAppPaths(options = {}) {
   };
 }
 
-function deleteAppPath(options = {}) {
+async function deleteAppPath(options = {}) {
   return {
-    path: deleteAppPaths(options).paths[0]
+    path: (await deleteAppPaths(options)).paths[0]
   };
 }
 

@@ -21,7 +21,7 @@ async function handleInfo(context) {
 
   try {
     await context.ensureUserFileIndex?.(context.user?.username);
-    return getAppPathInfo({
+    return await getAppPathInfo({
       maxLayer,
       path: readPath(context),
       projectRoot: context.projectRoot,

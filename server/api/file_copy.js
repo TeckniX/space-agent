@@ -36,7 +36,7 @@ export async function post(context) {
         options.entries = payload.entries;
       }
 
-      return hasBatchCopy(payload) ? copyAppPaths(options) : copyAppPath(options);
+      return hasBatchCopy(payload) ? await copyAppPaths(options) : await copyAppPath(options);
     });
   } catch (error) {
     throw createHttpError(error.message || "File copy failed.", Number(error.statusCode) || 500);

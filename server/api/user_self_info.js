@@ -1,7 +1,7 @@
 import { getRuntimeGroupIndex } from "../lib/customware/group_runtime.js";
 import { getUserCryptoState } from "../lib/auth/user_crypto.js";
 
-export function get(context) {
+export async function get(context) {
   const username = String(context.user?.username || "").trim();
   const userIndex =
     context.watchdog && typeof context.watchdog.getIndex === "function"
@@ -18,7 +18,7 @@ export function get(context) {
     groupIndex && typeof groupIndex.getManagedGroupsForUser === "function"
       ? groupIndex.getManagedGroupsForUser(username)
       : [];
-  const userCryptoState = getUserCryptoState(context.projectRoot, username, context.runtimeParams);
+  const userCryptoState = await getUserCryptoState(context.projectRoot, username, context.runtimeParams);
   return {
     fullName: String(userRecord?.fullName || username),
     groups: Array.isArray(groups) ? groups : [],
