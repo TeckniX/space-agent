@@ -1,0 +1,39 @@
+# fly.toml — Space Agent on Fly.io (same deployment shape as railway.toml).
+# Reference: https://fly.io/docs/reference/configuration/
+#
+# Before first deploy, create a volume in the same region as primary_region:
+#   fly volumes create customware --region iad --size 10
+# The `source` name below must match. Scale to one machine per volume region
+# when using mounts (see Fly docs on volumes).
+
+app = "space-agent"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  CUSTOMWARE_PATH = "/data/customware"
+  HOST = "0.0.0.0"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+
+[[http_service.checks]]
+  grace_period = "60s"
+  interval = "30s"
+  method = "GET"
+  timeout = "10s"
+  path = "/"
+
+[mounts]
+  source = "customware"
+  destination = "/data/customware"
+  initial_size = "10gb"
+
+[[restart]]
+  policy = "on-failure"
+  retries = 10

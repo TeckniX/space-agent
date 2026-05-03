@@ -78,6 +78,16 @@ node space supervise HOST=0.0.0.0 PORT=3000 # zero downtime auto-update
 
 **Default login (Docker / Railway first boot):** username `admin`, password `change-me-now`. The entrypoint creates this user only when the admin layer is missing on the volume (see [`docker-entrypoint.sh`](./docker-entrypoint.sh)). Change the password immediately after first sign-in, or set `SPACE_DOCKER_ADMIN_PASSWORD` before the first boot if you want a different initial password.
 
+### Deploying to Fly.io
+
+[Fly.io](https://fly.io) can run Space Agent using the checked-in [`fly.toml`](./fly.toml): the image builds from the root [`Dockerfile`](./Dockerfile), sets `CUSTOMWARE_PATH` to `/data/customware`, exposes HTTP on **port 3000** (`http_service.internal_port`, aligned with the container defaults), health-checks `GET /`, and mounts a **Fly Volume** at `/data/customware` (see `[mounts]`).
+
+1. Install [flyctl](https://fly.io/docs/hands-on/install-flyctl/) and create or select an app (`fly launch` in this directory, or set `app` in `fly.toml` to match an existing app).
+2. Create a volume in the **same region** as `primary_region` in `fly.toml`, for example: `fly volumes create customware --region iad --size 10`. The volume name must match `source` under `[mounts]`.
+3. `fly deploy`. Fly sends traffic to the machine on port 3000; the container listens on `HOST=0.0.0.0`.
+
+**Default login (Docker / Fly.io first boot):** same as above — username `admin`, password `change-me-now`, with the same `SPACE_DOCKER_ADMIN_PASSWORD` override and [`docker-entrypoint.sh`](./docker-entrypoint.sh) behavior.
+
 Run `node space help` to see the full command surface and built-in help for each from [`commands/params.yaml`](./commands/params.yaml).
 
 ## AI-driven development and documentation
