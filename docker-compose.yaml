@@ -49,6 +49,8 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_started
+      space-agent-init:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://spaceagent:spaceagent@postgres:5432/spaceagent
       OBJECT_STORAGE_ENDPOINT: http://rustfs:9000
@@ -58,6 +60,19 @@ services:
       OBJECT_STORAGE_REGION: us-east-1
       OBJECT_STORAGE_USE_PATH_STYLE: "true"
     restart: unless-stopped
+
+  space-agent-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: space-agent:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://spaceagent:spaceagent@postgres:5432/spaceagent
+    entrypoint: ["node", "server/migrations/run.js"]
+    restart: "no"
 
 volumes:
   space-agent-customware:

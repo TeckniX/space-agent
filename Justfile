@@ -29,7 +29,7 @@ docker-shell:
 
 compose-up *args:
     docker compose up \
-    {{ if args =~ "--build" { "--build" } else { "" } }} \
+    {{ if args =~ "build" { "--build" } else { "" } }} \
     --detach --force-recreate
 
 compose-down:
@@ -37,7 +37,7 @@ compose-down:
 
 compose-logs *args:
     docker compose logs \
-    {{ if args != "" { "--until" + args } else { "" } }} \ 
+    {{ if args != "" { "--since " + args } else { "" } }} \
     --follow
 
 compose-exec SERVICE COMMAND:

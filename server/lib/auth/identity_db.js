@@ -14,7 +14,9 @@ function isIdentityDatabaseEnabled(runtimeParams) {
   return Boolean(normalizeDatabaseUrl(runtimeParams));
 }
 
-function getPool(runtimeParams) {
+let initializedPools = new Set();
+
+async function getPool(runtimeParams) {
   const connectionString = normalizeDatabaseUrl(runtimeParams);
 
   if (!connectionString) {
@@ -22,36 +24,62 @@ function getPool(runtimeParams) {
   }
 
   if (!pools.has(connectionString)) {
-    pools.set(
+    const pool = new pg.Pool({
       connectionString,
-      new pg.Pool({
-        connectionString,
-        max: 10
-      })
-    );
+      max: 10
+    });
+    pools.set(connectionString, pool);
+
+    try {
+      await pool.query("SELECT 1");
+      console.log("Identity database connected:", connectionString.replace(/\/\/[^:]+:[^@]+@/, "//****:****@"));
+      initializedPools.add(connectionString);
+    } catch (error) {
+      console.error("Failed to connect to identity database:", error.message);
+      pools.delete(connectionString);
+      return null;
+    }
   }
 
   return pools.get(connectionString);
 }
 
 async function ensureIdentitySchemaIfConfigured(runtimeParams) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     return;
   }
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS space_identity_users (
-      username TEXT PRIMARY KEY,
-      user_yaml TEXT NOT NULL DEFAULT '',
-      password_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      logins_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      crypto_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-      server_share_json JSONB,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS space_identity_users (
+        username TEXT PRIMARY KEY,
+        user_yaml TEXT NOT NULL DEFAULT '',
+        password_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        logins_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        crypto_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        server_share_json JSONB,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    const result = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public'
+        AND table_name = 'space_identity_users'
+      );
+    `);
+    if (result.rows[0]?.exists) {
+      console.log("Identity database table verified");
+    } else {
+      console.error("Identity table was not created!");
+    }
+  } catch (error) {
+    console.error("Failed to create identity schema:", error.message);
+    throw error;
+  }
 }
 
 function mapRow(row) {
@@ -71,7 +99,7 @@ function mapRow(row) {
 }
 
 async function fetchIdentityRow(runtimeParams, username) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     return null;
@@ -87,7 +115,7 @@ async function fetchIdentityRow(runtimeParams, username) {
 }
 
 async function fetchAllIdentityRows(runtimeParams) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     return [];
@@ -102,7 +130,7 @@ async function fetchAllIdentityRows(runtimeParams) {
 }
 
 async function fetchIdentityRowsForUsernames(runtimeParams, usernames) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool || !Array.isArray(usernames) || usernames.length === 0) {
     return [];
@@ -129,7 +157,7 @@ async function userIdentityExists(runtimeParams, username) {
 }
 
 async function deleteIdentityUser(runtimeParams, username) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     return false;
@@ -140,7 +168,7 @@ async function deleteIdentityUser(runtimeParams, username) {
 }
 
 async function clearIdentityServerShare(runtimeParams, username) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     return false;
@@ -155,7 +183,7 @@ async function clearIdentityServerShare(runtimeParams, username) {
 }
 
 async function upsertFullIdentityUser(runtimeParams, row) {
-  const pool = getPool(runtimeParams);
+  const pool = await getPool(runtimeParams);
 
   if (!pool) {
     throw new Error("DATABASE_URL is not configured.");
