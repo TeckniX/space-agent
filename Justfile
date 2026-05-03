@@ -27,14 +27,18 @@ docker-run:
 docker-shell:
     docker run --rm -it -e SPACE_DOCKER_SKIP_INIT=1 -v {{VOLUME}}:/srv/space/customware {{FULL_IMAGE}} bash
 
-compose-up:
-    docker compose up -d
+compose-up *args:
+    docker compose up \
+    {{ if args =~ "--build" { "--build" } else { "" } }} \
+    --detach --force-recreate
 
 compose-down:
-    docker compose down
+    docker compose down --remove-orphans
 
-compose-logs:
-    docker compose logs -f
+compose-logs *args:
+    docker compose logs \
+    {{ if args != "" { "--until" + args } else { "" } }} \ 
+    --follow
 
-compose-exec:
+compose-exec SERVICE COMMAND:
     docker compose exec {{SERVICE}} {{COMMAND}}
