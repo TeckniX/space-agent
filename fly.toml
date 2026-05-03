@@ -1,39 +1,42 @@
-# fly.toml — Space Agent on Fly.io (same deployment shape as railway.toml).
-# Reference: https://fly.io/docs/reference/configuration/
+# fly.toml app configuration file generated for space-agent on 2026-05-03T19:46:58Z
 #
-# Before first deploy, create a volume in the same region as primary_region:
-#   fly volumes create customware --region iad --size 10
-# The `source` name below must match. Scale to one machine per volume region
-# when using mounts (see Fly docs on volumes).
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "space-agent"
-primary_region = "iad"
+app = 'space-agent'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  CUSTOMWARE_PATH = "/data/customware"
-  HOST = "0.0.0.0"
+  CUSTOMWARE_PATH = '/data/customware'
+  HOST = '0.0.0.0'
+
+[[mounts]]
+  source = 'customware'
+  destination = '/data/customware'
+  initial_size = '10gb'
 
 [http_service]
-  internal_port = 3000
+  internal_port = 8080
   force_https = true
-  auto_stop_machines = "off"
+  auto_stop_machines = 'off'
   auto_start_machines = true
 
-[[http_service.checks]]
-  grace_period = "60s"
-  interval = "30s"
-  method = "GET"
-  timeout = "10s"
-  path = "/"
-
-[mounts]
-  source = "customware"
-  destination = "/data/customware"
-  initial_size = "10gb"
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '10s'
+    grace_period = '1m0s'
+    method = 'GET'
+    path = '/'
 
 [[restart]]
-  policy = "on-failure"
+  policy = 'on-failure'
   retries = 10
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
