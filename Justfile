@@ -40,5 +40,8 @@ compose-logs *args:
     {{ if args != "" { "--since " + args } else { "" } }} \
     --follow
 
+compose-migration:
+    docker compose up --abort-on-container-exit space-agent-init postgres
+
 compose-exec SERVICE COMMAND:
     docker compose exec {{SERVICE}} {{COMMAND}}
