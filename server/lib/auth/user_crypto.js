@@ -532,34 +532,37 @@ async function writeReadyUserCryptoRecord(projectRoot, username, record, options
   const sealedServerShare = serverShare
     ? sealUserCryptoServerShare(serverShare, normalizedRecord, authKeys)
     : null;
-  await writeUserCryptoRecord(
-    projectRoot,
-    normalizedUsername,
-    serializeUserCryptoRecord({
-      ...normalizedRecord,
-      createdAt: normalizedRecord.createdAt || now,
-      serverShareCiphertext: sealedServerShare?.serverShareCiphertext || "",
-      serverShareIv: sealedServerShare?.serverShareIv || "",
-      serverShareStorage: sealedServerShare?.serverShareStorage || "",
-      serverShareTag: sealedServerShare?.serverShareTag || "",
-      updatedAt: now
-    }),
-    runtimeParams
-  );
-  recordAppPathMutations(
-    {
-      projectRoot,
-      runtimeParams
-    },
-    [buildUserCryptoProjectPath(normalizedUsername)]
-  );
+await writeUserCryptoRecord(
+     projectRoot,
+     normalizedUsername,
+     serializeUserCryptoRecord({
+       ...normalizedRecord,
+       createdAt: normalizedRecord.createdAt || now,
+       serverShareCiphertext: sealedServerShare?.serverShareCiphertext || "",
+       serverShareIv: sealedServerShare?.serverShareIv || "",
+       serverShareStorage: sealedServerShare?.serverShareStorage || "",
+       serverShareTag: sealedServerShare?.serverShareTag || "",
+       updatedAt: now
+     }),
+     runtimeParams
+   );
 
-  return {
-    keyId: normalizedRecord.keyId,
-    projectPath: buildUserCryptoProjectPath(normalizedUsername),
-    username: normalizedUsername
-  };
-}
+   if (!isIdentityDatabaseEnabled(runtimeParams)) {
+     recordAppPathMutations(
+       {
+         projectRoot,
+         runtimeParams
+       },
+       [buildUserCryptoProjectPath(normalizedUsername)]
+     );
+   }
+
+   return {
+     keyId: normalizedRecord.keyId,
+     projectPath: buildUserCryptoProjectPath(normalizedUsername),
+     username: normalizedUsername
+   };
+ }
 
 async function provisionUserCrypto(projectRoot, username, options = {}) {
   const normalizedUsername = normalizeUsername(username);
@@ -606,34 +609,37 @@ async function invalidateUserCryptoRecord(projectRoot, username, options = {}) {
     serverShareTag: _serverShareTag,
     ...recordWithoutServerShare
   } = currentRecord || {};
-  await writeUserCryptoRecord(
-    projectRoot,
-    normalizedUsername,
-    serializeUserCryptoRecord({
-      ...recordWithoutServerShare,
-      createdAt: currentRecord?.createdAt || now,
-      invalidatedAt: now,
-      keyId: currentRecord?.keyId || "",
-      status: USER_CRYPTO_STATUS_INVALIDATED,
-      updatedAt: now,
-      version: USER_CRYPTO_RECORD_VERSION
-    }),
-    runtimeParams
-  );
-  recordAppPathMutations(
-    {
-      projectRoot,
-      runtimeParams
-    },
-    [buildUserCryptoProjectPath(normalizedUsername)]
-  );
+await writeUserCryptoRecord(
+     projectRoot,
+     normalizedUsername,
+     serializeUserCryptoRecord({
+       ...recordWithoutServerShare,
+       createdAt: currentRecord?.createdAt || now,
+       invalidatedAt: now,
+       keyId: currentRecord?.keyId || "",
+       status: USER_CRYPTO_STATUS_INVALIDATED,
+       updatedAt: now,
+       version: USER_CRYPTO_RECORD_VERSION
+     }),
+     runtimeParams
+   );
 
-  return {
-    changed: true,
-    projectPath: buildUserCryptoProjectPath(normalizedUsername),
-    username: normalizedUsername
-  };
-}
+   if (!isIdentityDatabaseEnabled(runtimeParams)) {
+     recordAppPathMutations(
+       {
+         projectRoot,
+         runtimeParams
+       },
+       [buildUserCryptoProjectPath(normalizedUsername)]
+     );
+   }
+
+   return {
+     changed: true,
+     projectPath: buildUserCryptoProjectPath(normalizedUsername),
+     username: normalizedUsername
+   };
+ }
 
 async function deleteUserCryptoArtifacts(projectRoot, username, runtimeParams = null) {
   return deleteUserCryptoServerShare(projectRoot, username, runtimeParams);

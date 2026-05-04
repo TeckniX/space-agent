@@ -31,6 +31,16 @@ import {
   shouldReplicateFileIndexShard
 } from "./file_index_store.js";
 import { isObjectStorageConfigured, listObjectMetadata } from "../storage/object_storage.js";
+import {
+  fetchIdentityRowsForUsernames,
+  isIdentityDatabaseEnabled
+} from "../auth/identity_db.js";
+import {
+  buildUserIndexSnapshot,
+  hydrateUserIndexSnapshot,
+  mergeIdentityRowsIntoSerializedSnapshot,
+  serializeUserIndexSnapshot
+} from "../auth/user_index.js";
 
 const REFRESH_DEBOUNCE_MS = 75;
 const FULL_SCAN_YIELD_INTERVAL_MS = 8;
@@ -2049,13 +2059,42 @@ export function createWatchdog(options = {}) {
       return authStateLoadPromises.get(normalizedUsername);
     }
 
-    const loadPromise = applyProjectPathChanges(getL2UserAuthProjectPaths(normalizedUsername), {
-      includeLazyFileIndexShards: false
-    }).finally(() => {
-      authStateLoadPromises.delete(normalizedUsername);
-    });
+    const loadPromise = (async () => {
+      // If identity database is enabled, try to load user from DB first
+      if (isIdentityDatabaseEnabled(runtimeParams)) {
+        const identityRows = await fetchIdentityRowsForUsernames(runtimeParams, [normalizedUsername]);
+        if (identityRows.length > 0) {
+          // User exists in identity DB, update the user index directly
+          const previousUserIndex = handlerStates.get("user_index") || getRuntimeUserIndex();
+          const serialized = serializeUserIndexSnapshot(previousUserIndex);
+          const merged = mergeIdentityRowsIntoSerializedSnapshot(serialized, identityRows);
+          const nextUserIndex = hydrateUserIndexSnapshot(merged);
+          handlerStates.set("user_index", nextUserIndex);
+
+          const delta = buildUserIndexShardChanges(previousUserIndex, nextUserIndex, [normalizedUsername]);
+
+          await stateSystem.commitEntries(delta);
+          applyReplicatedChangesToAreaState(delta);
+
+          return {
+            changed: true,
+            delta,
+            projectPaths: [],
+            version: getCurrentVersion()
+          };
+        }
+      }
+
+      // Fall back to filesystem path sync
+      return applyProjectPathChanges(getL2UserAuthProjectPaths(normalizedUsername), {
+        includeLazyFileIndexShards: false
+      });
+    })();
 
     authStateLoadPromises.set(normalizedUsername, loadPromise);
+    loadPromise.finally(() => {
+      authStateLoadPromises.delete(normalizedUsername);
+    });
     return loadPromise;
   }
 

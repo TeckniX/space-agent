@@ -115,20 +115,22 @@ async function createUserInternal(projectRoot, username, password, options = {},
     await writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
   }
 
-  recordAppPathMutations(
-    {
-      projectRoot,
-      runtimeParams
-    },
-    [
-      `/app/L2/${normalizedUsername}/`,
-      `/app/L2/${normalizedUsername}/meta/`,
-      `/app/L2/${normalizedUsername}/meta/logins.json`,
-      `/app/L2/${normalizedUsername}/meta/password.json`,
-      `/app/L2/${normalizedUsername}/mod/`,
-      `/app/L2/${normalizedUsername}/user.yaml`
-    ]
-  );
+  if (!isIdentityDatabaseEnabled(runtimeParams)) {
+    recordAppPathMutations(
+      {
+        projectRoot,
+        runtimeParams
+      },
+      [
+        `/app/L2/${normalizedUsername}/`,
+        `/app/L2/${normalizedUsername}/meta/`,
+        `/app/L2/${normalizedUsername}/meta/logins.json`,
+        `/app/L2/${normalizedUsername}/meta/password.json`,
+        `/app/L2/${normalizedUsername}/mod/`,
+        `/app/L2/${normalizedUsername}/user.yaml`
+      ]
+    );
+  }
 
   return {
     userDir,
@@ -178,13 +180,16 @@ async function setUserPassword(projectRoot, username, password, options = {}) {
     runtimeParams
   );
   await writeUserLogins(projectRoot, normalizedUsername, {}, runtimeParams);
-  recordAppPathMutations(
-    {
-      projectRoot,
-      runtimeParams
-    },
-    [`/app/L2/${normalizedUsername}/meta/password.json`, `/app/L2/${normalizedUsername}/meta/logins.json`]
-  );
+
+  if (!isIdentityDatabaseEnabled(runtimeParams)) {
+    recordAppPathMutations(
+      {
+        projectRoot,
+        runtimeParams
+      },
+      [`/app/L2/${normalizedUsername}/meta/password.json`, `/app/L2/${normalizedUsername}/meta/logins.json`]
+    );
+  }
 
   if (userCryptoRecord) {
     await writeReadyUserCryptoRecord(projectRoot, normalizedUsername, userCryptoRecord, {
@@ -262,13 +267,16 @@ async function deleteUser(projectRoot, username, options = {}) {
   }
 
   await deleteUserCryptoArtifacts(projectRoot, normalizedUsername, runtimeParams);
-  recordAppPathMutations(
-    {
-      projectRoot,
-      runtimeParams
-    },
-    [`/app/L2/${normalizedUsername}/`]
-  );
+
+  if (!isIdentityDatabaseEnabled(runtimeParams)) {
+    recordAppPathMutations(
+      {
+        projectRoot,
+        runtimeParams
+      },
+      [`/app/L2/${normalizedUsername}/`]
+    );
+  }
 
   return true;
 }

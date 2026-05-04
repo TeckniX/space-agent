@@ -213,11 +213,19 @@ async function writeUserCryptoRecord(projectRoot, username, record, runtimeParam
 }
 
 async function ensureUserStructure(projectRoot, username, runtimeParams = null) {
-  const userDir = buildUserAbsolutePath(projectRoot, username, "", runtimeParams);
-  const metaDir = buildUserAbsolutePath(projectRoot, username, USER_META_DIRNAME, runtimeParams);
-  const modDir = buildUserAbsolutePath(projectRoot, username, "mod", runtimeParams);
-  fs.mkdirSync(modDir, { recursive: true });
-  fs.mkdirSync(metaDir, { recursive: true });
+  const normalizedUsername = normalizeUsername(username);
+  let userDir = "";
+  let metaDir = "";
+  let modDir = "";
+
+  if (!isIdentityDatabaseEnabled(runtimeParams)) {
+    userDir = buildUserAbsolutePath(projectRoot, username, "", runtimeParams);
+    metaDir = buildUserAbsolutePath(projectRoot, username, USER_META_DIRNAME, runtimeParams);
+    modDir = buildUserAbsolutePath(projectRoot, username, "mod", runtimeParams);
+    fs.mkdirSync(modDir, { recursive: true });
+    fs.mkdirSync(metaDir, { recursive: true });
+  }
+
   return {
     metaDir,
     modDir,
